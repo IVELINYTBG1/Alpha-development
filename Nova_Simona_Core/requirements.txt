@@ -1,0 +1,15 @@
+# Nova & Simona — Python Brain Dependencies
+# Install with:  pip install -r requirements.txt
+
+# PyTorch — tensor math substrate (the "electricity" of the brain)
+# For CUDA GPU:    pip install torch --index-url https://download.pytorch.org/whl/cu121
+# For Apple MPS:   torch is already MPS-capable on macOS >= 12.3
+# For CPU-only edge (RPi, NPU):
+torch>=2.2.0
+
+# snnTorch — Spiking Neural Network primitives built on PyTorch
+# Provides: Leaky, Synaptic, Alpha, RSynaptic, surrogate gradients, etc.
+snntorch>=0.9.1
+
+# NumPy — array utilities used in introspect() and future signal processing
+numpy>=1.26.0
