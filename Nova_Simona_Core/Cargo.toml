@@ -1,0 +1,43 @@
+[package]
+name    = "nova_simona_core"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "nova_simona_core"
+path = "src/main.rs"
+
+[dependencies]
+# PyO3 — narrow FFI bridge to Python/snnTorch library
+# Used ONLY for surrogate gradients and offline training.
+# The brain physics are pure Rust.
+pyo3 = { version = "0.21", features = ["auto-initialize"] }
+
+# Random number generation — used by Simona's stochastic resonance noise
+rand      = "0.8"
+rand_distr = "0.4"
+
+[profile.release]
+opt-level     = 3
+lto           = true        # Link-time optimization
+codegen-units = 1           # Maximum inlining
+panic         = "abort"     # No unwinding on edge hardware
+
+# ── BUILD INSTRUCTIONS ────────────────────────────────────────────────────────
+#
+# 1. Install Python shim deps (snnTorch only — not the brain):
+#      pip install -r requirements.txt
+#
+# 2. Point PyO3 at your Python:
+#      export PYO3_PYTHON=$(which python3)
+#
+# 3. Build and run:
+#      cargo run --release
+#
+# 4. Cross-compile for ARM edge (Raspberry Pi / mobile NPU):
+#      cargo build --release --target aarch64-unknown-linux-gnu
+#
+# Language breakdown (approximate):
+#   Rust  : ~92% (all SNN physics, state, event loop, I/O, telemetry)
+#   Python: ~8%  (snnTorch surrogate gradients, offline BPTT — library calls only)
+# ─────────────────────────────────────────────────────────────────────────────

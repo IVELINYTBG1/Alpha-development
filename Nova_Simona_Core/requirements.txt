@@ -1,0 +1,14 @@
+# Nova & Simona — Python snnTorch Shim Dependencies
+# These are NOT the brain. The brain is in Rust.
+# These are the library calls Rust cannot make natively.
+#
+# Install: pip install -r requirements.txt
+
+# snnTorch — surrogate gradient functions (no Rust equivalent)
+snntorch>=0.9.1
+
+# PyTorch — required by snnTorch
+torch>=2.2.0
+
+# NumPy — utility for offline training data handling
+numpy>=1.26.0
