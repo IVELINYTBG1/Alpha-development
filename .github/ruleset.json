@@ -1,0 +1,282 @@
+{
+  "_comment": "Nova & Simona — GitHub Repository Ruleset v1.0",
+  "_usage": "Import via: GitHub repo → Settings → Rules → Rulesets → Import",
+
+  "rulesets": [
+
+    {
+      "name": "Protect main — Production Stable",
+      "target": "branch",
+      "enforcement": "active",
+      "conditions": {
+        "ref_name": {
+          "include": ["refs/heads/main"],
+          "exclude": []
+        }
+      },
+      "rules": [
+        {
+          "type": "deletion",
+          "_comment": "Nobody deletes main. Ever."
+        },
+        {
+          "type": "non_fast_forward",
+          "_comment": "No force-pushing main. History is sacred."
+        },
+        {
+          "type": "pull_request",
+          "parameters": {
+            "required_approving_review_count": 1,
+            "dismiss_stale_reviews_on_push": true,
+            "require_code_owner_review": false,
+            "require_last_push_approval": true,
+            "required_review_thread_resolution": true,
+            "_comment": "Every merge into main needs a reviewed PR. Solo dev: approve your own PR after self-review."
+          }
+        },
+        {
+          "type": "required_status_checks",
+          "parameters": {
+            "strict_required_status_checks_policy": true,
+            "required_status_checks": [
+              {
+                "context": "cargo-check",
+                "_comment": "cargo check must pass — Rust compiles"
+              },
+              {
+                "context": "cargo-clippy",
+                "_comment": "No clippy warnings allowed on main"
+              },
+              {
+                "context": "python-shim-import",
+                "_comment": "brain.py must import cleanly (snnTorch present)"
+              }
+            ]
+          }
+        },
+        {
+          "type": "commit_message_pattern",
+          "parameters": {
+            "name": "Conventional Commits on main",
+            "negate": false,
+            "operator": "regex",
+            "pattern": "^(feat|fix|refactor|perf|docs|chore|test|neuron|synapse|neuromod)(\\(.+\\))?: .{1,80}",
+            "_comment": "Examples: feat(simona): add stochastic resonance scaling | fix(neuromod): clamp V_phill floor | neuron(lif): tune beta constants"
+          }
+        }
+      ],
+      "bypass_actors": [
+        {
+          "actor_type": "RepositoryRole",
+          "actor_id": "admin",
+          "bypass_mode": "always",
+          "_comment": "Repo owner can bypass in a true emergency only"
+        }
+      ]
+    },
+
+    {
+      "name": "Protect dev — Integration Branch",
+      "target": "branch",
+      "enforcement": "active",
+      "conditions": {
+        "ref_name": {
+          "include": ["refs/heads/dev"],
+          "exclude": []
+        }
+      },
+      "rules": [
+        {
+          "type": "deletion",
+          "_comment": "dev branch cannot be deleted"
+        },
+        {
+          "type": "non_fast_forward",
+          "_comment": "No force-push on dev either"
+        },
+        {
+          "type": "required_status_checks",
+          "parameters": {
+            "strict_required_status_checks_policy": false,
+            "required_status_checks": [
+              {
+                "context": "cargo-check",
+                "_comment": "Rust must at least compile before merging into dev"
+              }
+            ]
+          }
+        }
+      ],
+      "bypass_actors": []
+    },
+
+    {
+      "name": "Feature Branch Naming",
+      "target": "branch",
+      "enforcement": "active",
+      "conditions": {
+        "ref_name": {
+          "include": ["refs/heads/**"],
+          "exclude": [
+            "refs/heads/main",
+            "refs/heads/dev"
+          ]
+        }
+      },
+      "rules": [
+        {
+          "type": "branch_name_pattern",
+          "parameters": {
+            "name": "Enforce branch naming convention",
+            "negate": false,
+            "operator": "regex",
+            "pattern": "^(feat|fix|refactor|perf|experiment|neuron|synapse|sensor|docs|chore)/.+",
+            "_comment": "Valid: feat/simona-noise-scaling | neuron/lif-dynamic-beta | sensor/cpal-microphone | experiment/hebbian-v2"
+          }
+        }
+      ],
+      "bypass_actors": []
+    },
+
+    {
+      "name": "Block secrets and large files",
+      "target": "push",
+      "enforcement": "active",
+      "conditions": {
+        "ref_name": {
+          "include": ["refs/heads/**"],
+          "exclude": []
+        }
+      },
+      "rules": [
+        {
+          "type": "secret_scanning",
+          "_comment": "Block API keys, tokens, credentials from being pushed"
+        },
+        {
+          "type": "file_path_restriction",
+          "parameters": {
+            "restricted_file_paths": [
+              ".env",
+              "*.pem",
+              "*.key",
+              "secrets.json",
+              "credentials.json",
+              "*.onnx",
+              "*.pt",
+              "*.bin",
+              "_comment": "Block model weight files — these belong in releases or LFS, not in the repo tree"
+            ]
+          }
+        },
+        {
+          "type": "max_file_size",
+          "parameters": {
+            "max_file_size": 10240,
+            "_comment": "10 MB cap per file. Model weights go in GitHub Releases."
+          }
+        }
+      ],
+      "bypass_actors": []
+    }
+
+  ],
+
+  "branch_structure": {
+    "_comment": "The intended Git flow for this project",
+    "main": {
+      "purpose": "Stable, production-ready. Every commit here is a tagged release.",
+      "merges_from": ["dev"],
+      "direct_push": false
+    },
+    "dev": {
+      "purpose": "Integration branch. Features land here first, stabilize, then go to main.",
+      "merges_from": ["feat/*", "fix/*", "refactor/*", "neuron/*", "synapse/*", "sensor/*", "experiment/*"],
+      "direct_push": false
+    },
+    "feat/*": {
+      "purpose": "New capabilities — new populations, new sensory portals, new output modes.",
+      "examples": [
+        "feat/cpal-microphone",
+        "feat/nokhwa-camera",
+        "feat/tts-spike-gated",
+        "feat/nova-simona-vector-shorthand"
+      ],
+      "merges_into": "dev"
+    },
+    "neuron/*": {
+      "purpose": "Changes to LIF physics, threshold constants, beta values, membrane equations.",
+      "examples": [
+        "neuron/dynamic-beta-modulation",
+        "neuron/lif-adaptive-threshold",
+        "neuron/synaptic-scaling"
+      ],
+      "merges_into": "dev"
+    },
+    "synapse/*": {
+      "purpose": "Changes to weight matrices, Hebbian rules, projection architecture.",
+      "examples": [
+        "synapse/hebbian-decay-tuning",
+        "synapse/lateral-inhibition",
+        "synapse/phill-nova-recurrent"
+      ],
+      "merges_into": "dev"
+    },
+    "sensor/*": {
+      "purpose": "Real hardware I/O replacing StubSensor — microphone, camera, haptics.",
+      "examples": [
+        "sensor/cpal-rms",
+        "sensor/nokhwa-motion",
+        "sensor/whisper-stt-portal"
+      ],
+      "merges_into": "dev"
+    },
+    "experiment/*": {
+      "purpose": "Wild ideas that may or may not make it. No stability guarantees.",
+      "examples": [
+        "experiment/nova-simona-latent-shorthand",
+        "experiment/spiking-attention",
+        "experiment/phill-oscillator"
+      ],
+      "merges_into": "dev"
+    },
+    "fix/*": {
+      "purpose": "Bug fixes — physics bugs, FFI errors, threshold miscalculations.",
+      "merges_into": "dev"
+    },
+    "docs/*": {
+      "purpose": "README, architecture diagrams, comments only.",
+      "merges_into": "dev"
+    }
+  },
+
+  "commit_convention": {
+    "format": "<type>(<scope>): <description>",
+    "types": {
+      "feat":      "New feature or capability",
+      "fix":       "Bug fix",
+      "refactor":  "Code restructure, no behavior change",
+      "perf":      "Performance improvement (sparsity, speed)",
+      "neuron":    "LIF physics changes",
+      "synapse":   "Weight/plasticity changes",
+      "neuromod":  "Neuromodulation equation changes",
+      "sensor":    "Sensory I/O changes",
+      "docs":      "Documentation only",
+      "chore":     "Tooling, CI, Cargo.toml, deps",
+      "test":      "Tests only"
+    },
+    "scopes": [
+      "phill", "nova", "simona",
+      "neurons", "synapses", "neuromod",
+      "sensors", "telemetry",
+      "main", "ffi", "brain"
+    ],
+    "examples": [
+      "feat(sensor): add cpal microphone RMS to vibe vector",
+      "neuron(simona): lower noise_level floor to 0.02",
+      "neuromod(phill): add stress_index exponential smoothing",
+      "fix(ffi): handle PyO3 None return from snnTorch heartbeat",
+      "perf(synapses): skip Hebbian update when pre-spike density < 1%"
+    ]
+  }
+}

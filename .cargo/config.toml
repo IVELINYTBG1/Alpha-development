@@ -1,0 +1,25 @@
+# .cargo/config.toml
+# =====================
+# Intel Iris Xe Optimization Build Config
+#
+# Iris Xe is an integrated GPU on 11th/12th Gen Intel Core (Tiger Lake, Alder Lake).
+# The HOST CPU on these chips supports AVX2 natively.
+#
+# -C target-cpu=native:
+#   Tells rustc to detect the exact CPU at compile time and enable
+#   every instruction set it supports — AVX2, FMA, POPCNT, BMI2, etc.
+#   This unlocks auto-vectorization at 256-bit width (8x f32 per cycle)
+#   for all the tight loops in neurons.rs and synapses.rs.
+#
+# -C opt-level=3:
+#   Maximum optimization. Enables loop unrolling, vectorization, inlining.
+#
+# WARNING: Binary will NOT run on CPUs older than the build machine.
+# For distribution, remove target-cpu=native and pin to target-cpu=haswell (AVX2 baseline).
+
+[build]
+rustflags = [
+    "-C", "target-cpu=native",
+    "-C", "opt-level=3",
+    "-C", "force-frame-pointers=no",
+]

@@ -1,0 +1,28 @@
+{
+  "name": "Branch naming convention",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": [
+        "refs/heads/**"
+      ],
+      "exclude": [
+        "refs/heads/main",
+        "refs/heads/dev"
+      ]
+    }
+  },
+  "rules": [
+    {
+      "type": "branch_name_pattern",
+      "parameters": {
+        "name": "Require branch prefix",
+        "negate": false,
+        "operator": "regex",
+        "pattern": "^(feat|fix|refactor|perf|experiment|neuron|synapse|sensor|docs|chore)/.+"
+      }
+    }
+  ],
+  "bypass_actors": []
+}

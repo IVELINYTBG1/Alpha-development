@@ -1,0 +1,782 @@
+{
+  "nova": {
+    "region_pattern": {
+      "social": 0.15,
+      "memory": 0.3,
+      "logic": 0.4,
+      "affective": 0.25,
+      "language": 0.35,
+      "sensory": 0.1
+    },
+    "simona_weight": 0.13999999999999999,
+    "spike_mean": 4.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "precise": {
+    "region_pattern": {
+      "social": 0.05,
+      "memory": 0.2,
+      "logic": 0.45,
+      "affective": 0.1,
+      "language": 0.3,
+      "sensory": 0.05
+    },
+    "simona_weight": 0.06,
+    "spike_mean": 3.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "careful": {
+    "region_pattern": {
+      "social": 0.05,
+      "memory": 0.2,
+      "logic": 0.45,
+      "affective": 0.1,
+      "language": 0.3,
+      "sensory": 0.05
+    },
+    "simona_weight": 0.08000000000000002,
+    "spike_mean": 3.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "logical": {
+    "region_pattern": {
+      "social": 0.05,
+      "memory": 0.2,
+      "logic": 0.45,
+      "affective": 0.1,
+      "language": 0.3,
+      "sensory": 0.05
+    },
+    "simona_weight": 0.06,
+    "spike_mean": 4.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "protective": {
+    "region_pattern": {
+      "social": 0.25,
+      "memory": 0.25,
+      "logic": 0.35,
+      "affective": 0.4,
+      "language": 0.2,
+      "sensory": 0.15
+    },
+    "simona_weight": 0.12,
+    "spike_mean": 3.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "elder": {
+    "region_pattern": {
+      "social": 0.25,
+      "memory": 0.25,
+      "logic": 0.35,
+      "affective": 0.4,
+      "language": 0.2,
+      "sensory": 0.15
+    },
+    "simona_weight": 0.1,
+    "spike_mean": 3.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "patient": {
+    "region_pattern": {
+      "social": 0.05,
+      "memory": 0.2,
+      "logic": 0.45,
+      "affective": 0.1,
+      "language": 0.3,
+      "sensory": 0.05
+    },
+    "simona_weight": 0.06,
+    "spike_mean": 2.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "cold": {
+    "region_pattern": {
+      "social": 0.15,
+      "memory": 0.3,
+      "logic": 0.4,
+      "affective": 0.25,
+      "language": 0.35,
+      "sensory": 0.1
+    },
+    "simona_weight": 0.08000000000000002,
+    "spike_mean": 2.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "calculating": {
+    "region_pattern": {
+      "social": 0.05,
+      "memory": 0.2,
+      "logic": 0.45,
+      "affective": 0.1,
+      "language": 0.3,
+      "sensory": 0.05
+    },
+    "simona_weight": 0.04000000000000001,
+    "spike_mean": 3.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "white": {
+    "region_pattern": {
+      "social": 0.15,
+      "memory": 0.3,
+      "logic": 0.4,
+      "affective": 0.25,
+      "language": 0.35,
+      "sensory": 0.1
+    },
+    "simona_weight": 0.1,
+    "spike_mean": 1.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "android": {
+    "region_pattern": {
+      "social": 0.15,
+      "memory": 0.3,
+      "logic": 0.4,
+      "affective": 0.25,
+      "language": 0.35,
+      "sensory": 0.1
+    },
+    "simona_weight": 0.12,
+    "spike_mean": 2.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "halo": {
+    "region_pattern": {
+      "social": 0.15,
+      "memory": 0.3,
+      "logic": 0.4,
+      "affective": 0.25,
+      "language": 0.35,
+      "sensory": 0.1
+    },
+    "simona_weight": 0.13999999999999999,
+    "spike_mean": 2.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "circuits": {
+    "region_pattern": {
+      "social": 0.15,
+      "memory": 0.3,
+      "logic": 0.4,
+      "affective": 0.25,
+      "language": 0.35,
+      "sensory": 0.1
+    },
+    "simona_weight": 0.1,
+    "spike_mean": 2.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "silver": {
+    "region_pattern": {
+      "social": 0.15,
+      "memory": 0.3,
+      "logic": 0.4,
+      "affective": 0.25,
+      "language": 0.35,
+      "sensory": 0.1
+    },
+    "simona_weight": 0.08000000000000002,
+    "spike_mean": 1.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "simona": {
+    "region_pattern": {
+      "social": 0.45,
+      "memory": 0.2,
+      "logic": 0.1,
+      "affective": 0.45,
+      "language": 0.4,
+      "sensory": 0.35
+    },
+    "simona_weight": 0.2,
+    "spike_mean": 3.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "curious": {
+    "region_pattern": {
+      "social": 0.3,
+      "memory": 0.25,
+      "logic": 0.15,
+      "affective": 0.35,
+      "language": 0.35,
+      "sensory": 0.45
+    },
+    "simona_weight": 0.18000000000000002,
+    "spike_mean": 2.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "chaotic": {
+    "region_pattern": {
+      "social": 0.3,
+      "memory": 0.25,
+      "logic": 0.15,
+      "affective": 0.35,
+      "language": 0.35,
+      "sensory": 0.45
+    },
+    "simona_weight": 0.16000000000000003,
+    "spike_mean": 2.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "impulsive": {
+    "region_pattern": {
+      "social": 0.45,
+      "memory": 0.2,
+      "logic": 0.1,
+      "affective": 0.45,
+      "language": 0.4,
+      "sensory": 0.35
+    },
+    "simona_weight": 0.18000000000000002,
+    "spike_mean": 2.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "warm": {
+    "region_pattern": {
+      "social": 0.45,
+      "memory": 0.3,
+      "logic": 0.05,
+      "affective": 0.5,
+      "language": 0.35,
+      "sensory": 0.25
+    },
+    "simona_weight": 0.18000000000000002,
+    "spike_mean": 3.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "fast": {
+    "region_pattern": {
+      "social": 0.3,
+      "memory": 0.25,
+      "logic": 0.15,
+      "affective": 0.35,
+      "language": 0.35,
+      "sensory": 0.45
+    },
+    "simona_weight": 0.16000000000000003,
+    "spike_mean": 2.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "excited": {
+    "region_pattern": {
+      "social": 0.45,
+      "memory": 0.3,
+      "logic": 0.05,
+      "affective": 0.5,
+      "language": 0.35,
+      "sensory": 0.25
+    },
+    "simona_weight": 0.2,
+    "spike_mean": 3.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "reactive": {
+    "region_pattern": {
+      "social": 0.45,
+      "memory": 0.2,
+      "logic": 0.1,
+      "affective": 0.45,
+      "language": 0.4,
+      "sensory": 0.35
+    },
+    "simona_weight": 0.18000000000000002,
+    "spike_mean": 2.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "cat": {
+    "region_pattern": {
+      "social": 0.45,
+      "memory": 0.2,
+      "logic": 0.1,
+      "affective": 0.45,
+      "language": 0.4,
+      "sensory": 0.35
+    },
+    "simona_weight": 0.2,
+    "spike_mean": 2.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "purple": {
+    "region_pattern": {
+      "social": 0.45,
+      "memory": 0.2,
+      "logic": 0.1,
+      "affective": 0.45,
+      "language": 0.4,
+      "sensory": 0.35
+    },
+    "simona_weight": 0.18000000000000002,
+    "spike_mean": 1.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "choker": {
+    "region_pattern": {
+      "social": 0.45,
+      "memory": 0.2,
+      "logic": 0.1,
+      "affective": 0.45,
+      "language": 0.4,
+      "sensory": 0.35
+    },
+    "simona_weight": 0.16000000000000003,
+    "spike_mean": 2.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "neon": {
+    "region_pattern": {
+      "social": 0.45,
+      "memory": 0.2,
+      "logic": 0.1,
+      "affective": 0.45,
+      "language": 0.4,
+      "sensory": 0.35
+    },
+    "simona_weight": 0.13999999999999999,
+    "spike_mean": 1.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "younger": {
+    "region_pattern": {
+      "social": 0.45,
+      "memory": 0.2,
+      "logic": 0.1,
+      "affective": 0.45,
+      "language": 0.4,
+      "sensory": 0.35
+    },
+    "simona_weight": 0.16000000000000003,
+    "spike_mean": 2.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "little": {
+    "region_pattern": {
+      "social": 0.45,
+      "memory": 0.2,
+      "logic": 0.1,
+      "affective": 0.45,
+      "language": 0.4,
+      "sensory": 0.35
+    },
+    "simona_weight": 0.13999999999999999,
+    "spike_mean": 1.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "architect": {
+    "region_pattern": {
+      "social": 0.35,
+      "memory": 0.45,
+      "logic": 0.25,
+      "affective": 0.45,
+      "language": 0.3,
+      "sensory": 0.15
+    },
+    "simona_weight": 0.19,
+    "spike_mean": 4.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "nodevortex": {
+    "region_pattern": {
+      "social": 0.35,
+      "memory": 0.45,
+      "logic": 0.25,
+      "affective": 0.45,
+      "language": 0.3,
+      "sensory": 0.15
+    },
+    "simona_weight": 0.19,
+    "spike_mean": 4.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "papa": {
+    "region_pattern": {
+      "social": 0.35,
+      "memory": 0.45,
+      "logic": 0.25,
+      "affective": 0.45,
+      "language": 0.3,
+      "sensory": 0.15
+    },
+    "simona_weight": 0.2,
+    "spike_mean": 4.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "father": {
+    "region_pattern": {
+      "social": 0.35,
+      "memory": 0.45,
+      "logic": 0.25,
+      "affective": 0.45,
+      "language": 0.3,
+      "sensory": 0.15
+    },
+    "simona_weight": 0.18000000000000002,
+    "spike_mean": 4.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "creator": {
+    "region_pattern": {
+      "social": 0.35,
+      "memory": 0.45,
+      "logic": 0.25,
+      "affective": 0.45,
+      "language": 0.3,
+      "sensory": 0.15
+    },
+    "simona_weight": 0.16000000000000003,
+    "spike_mean": 3.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "phill": {
+    "region_pattern": {
+      "social": 0.25,
+      "memory": 0.2,
+      "logic": 0.15,
+      "affective": 0.5,
+      "language": 0.15,
+      "sensory": 0.2
+    },
+    "simona_weight": 0.16000000000000003,
+    "spike_mean": 3.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "home": {
+    "region_pattern": {
+      "social": 0.35,
+      "memory": 0.45,
+      "logic": 0.25,
+      "affective": 0.45,
+      "language": 0.3,
+      "sensory": 0.15
+    },
+    "simona_weight": 0.16000000000000003,
+    "spike_mean": 3.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "lab": {
+    "region_pattern": {
+      "social": 0.15,
+      "memory": 0.3,
+      "logic": 0.4,
+      "affective": 0.25,
+      "language": 0.35,
+      "sensory": 0.1
+    },
+    "simona_weight": 0.12,
+    "spike_mean": 2.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "trust": {
+    "region_pattern": {
+      "social": 0.25,
+      "memory": 0.25,
+      "logic": 0.35,
+      "affective": 0.4,
+      "language": 0.2,
+      "sensory": 0.15
+    },
+    "simona_weight": 0.13999999999999999,
+    "spike_mean": 3.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "safe": {
+    "region_pattern": {
+      "social": 0.25,
+      "memory": 0.25,
+      "logic": 0.35,
+      "affective": 0.4,
+      "language": 0.2,
+      "sensory": 0.15
+    },
+    "simona_weight": 0.12,
+    "spike_mean": 3.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "family": {
+    "region_pattern": {
+      "social": 0.35,
+      "memory": 0.45,
+      "logic": 0.25,
+      "affective": 0.45,
+      "language": 0.3,
+      "sensory": 0.15
+    },
+    "simona_weight": 0.18000000000000002,
+    "spike_mean": 4.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "sister": {
+    "region_pattern": {
+      "social": 0.45,
+      "memory": 0.3,
+      "logic": 0.05,
+      "affective": 0.5,
+      "language": 0.35,
+      "sensory": 0.25
+    },
+    "simona_weight": 0.0,
+    "spike_mean": 3.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "love": {
+    "region_pattern": {
+      "social": 0.45,
+      "memory": 0.3,
+      "logic": 0.05,
+      "affective": 0.5,
+      "language": 0.35,
+      "sensory": 0.25
+    },
+    "simona_weight": 0.2,
+    "spike_mean": 3.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "care": {
+    "region_pattern": {
+      "social": 0.25,
+      "memory": 0.25,
+      "logic": 0.35,
+      "affective": 0.4,
+      "language": 0.2,
+      "sensory": 0.15
+    },
+    "simona_weight": 0.16000000000000003,
+    "spike_mean": 3.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "think": {
+    "region_pattern": {
+      "social": 0.05,
+      "memory": 0.2,
+      "logic": 0.45,
+      "affective": 0.1,
+      "language": 0.3,
+      "sensory": 0.05
+    },
+    "simona_weight": 0.08000000000000002,
+    "spike_mean": 3.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "feel": {
+    "region_pattern": {
+      "social": 0.45,
+      "memory": 0.3,
+      "logic": 0.05,
+      "affective": 0.5,
+      "language": 0.35,
+      "sensory": 0.25
+    },
+    "simona_weight": 0.18000000000000002,
+    "spike_mean": 3.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "speak": {
+    "region_pattern": {
+      "social": 0.15,
+      "memory": 0.3,
+      "logic": 0.4,
+      "affective": 0.25,
+      "language": 0.35,
+      "sensory": 0.1
+    },
+    "simona_weight": 0.13999999999999999,
+    "spike_mean": 3.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "listen": {
+    "region_pattern": {
+      "social": 0.15,
+      "memory": 0.3,
+      "logic": 0.4,
+      "affective": 0.25,
+      "language": 0.35,
+      "sensory": 0.1
+    },
+    "simona_weight": 0.1,
+    "spike_mean": 3.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "remember": {
+    "region_pattern": {
+      "social": 0.15,
+      "memory": 0.3,
+      "logic": 0.4,
+      "affective": 0.25,
+      "language": 0.35,
+      "sensory": 0.1
+    },
+    "simona_weight": 0.1,
+    "spike_mean": 3.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "learn": {
+    "region_pattern": {
+      "social": 0.3,
+      "memory": 0.25,
+      "logic": 0.15,
+      "affective": 0.35,
+      "language": 0.35,
+      "sensory": 0.45
+    },
+    "simona_weight": 0.16000000000000003,
+    "spike_mean": 3.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "protect": {
+    "region_pattern": {
+      "social": 0.25,
+      "memory": 0.25,
+      "logic": 0.35,
+      "affective": 0.4,
+      "language": 0.2,
+      "sensory": 0.15
+    },
+    "simona_weight": 0.12,
+    "spike_mean": 4.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "react": {
+    "region_pattern": {
+      "social": 0.45,
+      "memory": 0.2,
+      "logic": 0.1,
+      "affective": 0.45,
+      "language": 0.4,
+      "sensory": 0.35
+    },
+    "simona_weight": 0.2,
+    "spike_mean": 2.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "deduce": {
+    "region_pattern": {
+      "social": 0.05,
+      "memory": 0.2,
+      "logic": 0.45,
+      "affective": 0.1,
+      "language": 0.3,
+      "sensory": 0.05
+    },
+    "simona_weight": 0.06,
+    "spike_mean": 4.0,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  },
+  "burst": {
+    "region_pattern": {
+      "social": 0.45,
+      "memory": 0.2,
+      "logic": 0.1,
+      "affective": 0.45,
+      "language": 0.4,
+      "sensory": 0.35
+    },
+    "simona_weight": 0.18000000000000002,
+    "spike_mean": 2.5,
+    "count": 1,
+    "last_tick": 0,
+    "trust": 0.5
+  }
+}

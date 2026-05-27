@@ -1,0 +1,121 @@
+[
+  {
+    "name": "Protect main",
+    "target": "branch",
+    "enforcement": "active",
+    "conditions": {
+      "ref_name": {
+        "include": [
+          "refs/heads/main"
+        ],
+        "exclude": []
+      }
+    },
+    "rules": [
+      {
+        "type": "deletion"
+      },
+      {
+        "type": "non_fast_forward"
+      },
+      {
+        "type": "pull_request",
+        "parameters": {
+          "required_approving_review_count": 1,
+          "dismiss_stale_reviews_on_push": true,
+          "require_code_owner_review": false,
+          "require_last_push_approval": true,
+          "required_review_thread_resolution": true
+        }
+      },
+      {
+        "type": "required_status_checks",
+        "parameters": {
+          "strict_required_status_checks_policy": true,
+          "required_status_checks": [
+            {
+              "context": "cargo-check"
+            },
+            {
+              "context": "cargo-clippy"
+            },
+            {
+              "context": "python-shim-import"
+            }
+          ]
+        }
+      },
+      {
+        "type": "commit_message_pattern",
+        "parameters": {
+          "name": "Conventional Commits",
+          "negate": false,
+          "operator": "regex",
+          "pattern": "^(feat|fix|refactor|perf|docs|chore|test|neuron|synapse|neuromod|sensor)(\\(.+\\))?: .{1,80}"
+        }
+      }
+    ],
+    "bypass_actors": []
+  },
+  {
+    "name": "Protect dev",
+    "target": "branch",
+    "enforcement": "active",
+    "conditions": {
+      "ref_name": {
+        "include": [
+          "refs/heads/dev"
+        ],
+        "exclude": []
+      }
+    },
+    "rules": [
+      {
+        "type": "deletion"
+      },
+      {
+        "type": "non_fast_forward"
+      },
+      {
+        "type": "required_status_checks",
+        "parameters": {
+          "strict_required_status_checks_policy": false,
+          "required_status_checks": [
+            {
+              "context": "cargo-check"
+            }
+          ]
+        }
+      }
+    ],
+    "bypass_actors": []
+  },
+  {
+    "name": "Branch naming convention",
+    "target": "branch",
+    "enforcement": "active",
+    "conditions": {
+      "ref_name": {
+        "include": [
+          "refs/heads/**"
+        ],
+        "exclude": [
+          "refs/heads/main",
+          "refs/heads/dev"
+        ]
+      }
+    },
+    "rules": [
+      {
+        "type": "branch_name_pattern",
+        "parameters": {
+          "name": "Require branch prefix",
+          "negate": false,
+          "operator": "regex",
+          "pattern": "^(feat|fix|refactor|perf|experiment|neuron|synapse|sensor|docs|chore)/.+"
+        }
+      }
+    ],
+    "bypass_actors": []
+  }
+]

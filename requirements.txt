@@ -1,0 +1,41 @@
+# Nova & Simona v0.5 — Python Dependencies
+# Install: pip install -r requirements.txt
+# Fedora 44: use python3 -m pip install --user -r requirements.txt
+
+# ── SNN Core ──────────────────────────────────────────────────────────────────
+torch>=2.2.0
+snntorch>=0.9.1
+numpy>=1.26.0
+
+# ── Vision (camera + face + motion) ──────────────────────────────────────────
+mediapipe>=0.10.0
+opencv-python>=4.8.0
+
+# ── STT backends (try in order, first installed wins) ────────────────────────
+# Option 1 — fastest, fully offline (recommended):
+faster-whisper>=1.0.0
+soundfile>=0.12.0
+
+# Option 2 — lightweight offline (smaller model):
+# vosk>=0.3.45
+# (after install, run: python stt_engine.py --download-vosk)
+
+# Option 3 — online fallback (no model download):
+# SpeechRecognition>=3.10.0
+
+# ── TTS (voice cloning) ──────────────────────────────────────────────────────
+TTS>=0.22.0
+sounddevice>=0.4.6
+
+# ── System utilities ──────────────────────────────────────────────────────────
+psutil>=5.9.0
+
+# ── Fedora 44 notes ───────────────────────────────────────────────────────────
+# Before pip install, ensure system deps:
+#   sudo dnf install -y python3-devel portaudio-devel
+#
+# If mediapipe fails on Fedora 44 (ARM or uncommon arch):
+#   pip install mediapipe --extra-index-url https://google-coral.github.io/py-repo/
+#
+# PipeWire + sounddevice: works out of the box on Fedora 44.
+# No pulse/jack bridge needed.

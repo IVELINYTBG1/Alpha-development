@@ -1,0 +1,39 @@
+# ── Rust build artifacts ─────────────────────────────────────────────
+/target/
+**/*.rs.bk
+
+# ── Python ───────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# ── Runtime / generated ──────────────────────────────────────────────
+brain_log.txt
+crash.log
+*.log
+
+# ── Environment ──────────────────────────────────────────────────────
+.env
+.env.local
+
+# ── OS / editor cruft ────────────────────────────────────────────────
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+.claude/
+
+# ── Models (downloaded on demand) ────────────────────────────────────
+*.bin
+*.pt
+*.pth
+*.onnx
+models/
+.cache/
