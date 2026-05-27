@@ -1,0 +1,6 @@
+# Repository Code Ownership Rules
+# Only IVELINYTBG1 can approve merges to main
+* @IVELINYTBG1
+
+# Require approval for key files
+.github/ @IVELINYTBG1
