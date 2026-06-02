@@ -166,12 +166,20 @@ class CameraThread:
         self,
         buffer:       VisualFeatureBuffer,
         camera_index: int   = 0,
-        target_fps:   float = 15.0,
+        target_fps:   float = 6.0,
     ):
+        import os
+        # Camera vision (mediapipe face-mesh + optical flow) is a heavy CONTINUOUS
+        # CPU load. Recognition/presence don't need 15fps — default to 6, tunable
+        # via NOVA_CAM_FPS (set 0 to effectively idle the camera on a tight CPU).
+        try:
+            env_fps = float(os.environ.get("NOVA_CAM_FPS", "") or target_fps)
+        except ValueError:
+            env_fps = target_fps
         self.buffer       = buffer
         self.camera_index = camera_index
-        self.target_fps   = target_fps
-        self.frame_ms     = 1000.0 / target_fps
+        self.target_fps   = max(1.0, env_fps if env_fps > 0 else 6.0)
+        self.frame_ms     = 1000.0 / self.target_fps
 
         self._thread: Optional[threading.Thread] = None
         self._running = threading.Event()

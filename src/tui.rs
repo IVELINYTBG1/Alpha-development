@@ -31,10 +31,13 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Sparkline},
+    widgets::{
+        Block, Borders, Gauge, List, ListItem, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Sparkline,
+    },
     Frame, Terminal,
 };
 
@@ -42,6 +45,22 @@ use crate::state::{InputMode, SharedState};
 
 pub const TUI_FPS:          u64 = 30;
 pub const TUI_INTERVAL_MS:  u64 = 1000 / TUI_FPS;
+
+// ── TUI-local view state (scrollback) ──────────────────────────────────────────
+// Lives ONLY in the render thread — never in SharedState (which the brain/audio
+// threads overwrite every tick). Tracks the conversation scrollback position.
+struct UiState {
+    chat_scroll:   usize, // lines scrolled UP from the bottom (0 = newest pinned)
+    chat_follow:   bool,  // true = auto-stick to the newest line
+    last_chat_len: usize, // previous chat length, for append-anchoring while scrolled
+    chat_visible:  usize, // last rendered visible row count (used as the page step)
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        Self { chat_scroll: 0, chat_follow: true, last_chat_len: 0, chat_visible: 1 }
+    }
+}
 
 // ── Pending input channel ─────────────────────────────────────────────────────
 // (text, from_stt) — from_stt=true when it came from voice recognition
@@ -69,11 +88,12 @@ fn event_loop(
     pending_input: &Arc<Mutex<Option<(String, bool)>>>,
 ) -> anyhow::Result<()> {
     let frame_dur = Duration::from_millis(TUI_INTERVAL_MS);
+    let mut ui = UiState::default();
 
     while running.load(Ordering::Relaxed) {
         let t0 = Instant::now();
         let s  = state.load();
-        term.draw(|f| draw(f, &s))?;
+        term.draw(|f| draw(f, &s, &mut ui))?;
 
         if event::poll(Duration::from_millis(0))? {
             if let Event::Key(k) = event::read()? {
@@ -95,6 +115,38 @@ fn event_loop(
                     // Tell STT engine about mode change via shared flag
                     // (main.rs reads input_mode and calls stt.set_mode)
                     continue;
+                }
+
+                // ── Conversation scrollback ───────────────────────────────────
+                // Works in any mode (harmless while typing — these keys aren't
+                // used for text entry). PgUp/PgDn page, Home/End jump.
+                match k.code {
+                    KeyCode::PageUp => {
+                        ui.chat_follow = false;
+                        ui.chat_scroll = ui.chat_scroll.saturating_add(ui.chat_visible.max(1));
+                        continue;
+                    }
+                    KeyCode::PageDown => {
+                        let step = ui.chat_visible.max(1);
+                        if ui.chat_scroll <= step {
+                            ui.chat_scroll = 0;
+                            ui.chat_follow = true;   // back at the bottom → resume following
+                        } else {
+                            ui.chat_scroll -= step;
+                        }
+                        continue;
+                    }
+                    KeyCode::Home => {
+                        ui.chat_follow = false;
+                        ui.chat_scroll = ui.chat_scroll.saturating_add(100_000); // clamped to top in draw
+                        continue;
+                    }
+                    KeyCode::End => {
+                        ui.chat_follow = true;
+                        ui.chat_scroll = 0;
+                        continue;
+                    }
+                    _ => {}
                 }
 
                 let mode        = state.load().input_mode.clone();
@@ -194,7 +246,7 @@ fn event_loop(
 // DRAW
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn draw(f: &mut Frame, s: &SharedState) {
+fn draw(f: &mut Frame, s: &SharedState, ui: &mut UiState) {
     let area = f.size();
     let has_thoughts = !s.thought_history.is_empty();
     let thought_h    = if has_thoughts { 4u16 } else { 0 };
@@ -208,7 +260,7 @@ fn draw(f: &mut Frame, s: &SharedState) {
             Constraint::Length(3),             // speaker banner
             Constraint::Min(16),               // brain panels
             Constraint::Length(thought_h),     // inner thoughts
-            Constraint::Length(search_h),      // web searches (emergent)
+            Constraint::Length(search_h),      // teacher Q&A (emergent)
             Constraint::Length(8),             // conversation
             Constraint::Length(5),             // input panel (taller for STT)
             Constraint::Length(3),             // status
@@ -220,7 +272,7 @@ fn draw(f: &mut Frame, s: &SharedState) {
     draw_brains(f, root[2], s);
     if has_thoughts { draw_thoughts(f, root[3], s); }
     if has_search   { draw_searches(f, root[4], s); }
-    draw_chat(f, root[5], s);
+    draw_chat(f, root[5], s, ui);
     draw_input(f, root[6], s);
     draw_status(f, root[7], s);
 }
@@ -665,7 +717,10 @@ fn region_bar_line(name: &str, act: f64, width: usize, color: Color, is_simona: 
 
 fn draw_thoughts(f: &mut Frame, area: Rect, s: &SharedState) {
     if area.height < 2 { return; }
-    let items: Vec<ListItem> = s.thought_history.iter().map(|t| {
+    let visible = area.height.saturating_sub(2).max(1) as usize;
+    let total   = s.thought_history.len();
+    let start   = total.saturating_sub(visible);   // tail — show the newest leaks
+    let items: Vec<ListItem> = s.thought_history[start..].iter().map(|t| {
         let (label, color) = if t.speaker == "thought_nova" {
             ("Nova  think | ", Color::Blue)
         } else {
@@ -688,15 +743,29 @@ fn draw_thoughts(f: &mut Frame, area: Rect, s: &SharedState) {
                 .border_style(Style::default().fg(Color::DarkGray))),
         area,
     );
+
+    if total > visible {
+        let mut sb = ScrollbarState::new(total).position(start);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight).begin_symbol(None).end_symbol(None),
+            area.inner(&Margin { vertical: 1, horizontal: 0 }),
+            &mut sb,
+        );
+    }
 }
 
-// ── WEB SEARCHES ──────────────────────────────────────────────────────────────
-// Emergent only — fired when SearchCortex pressure crosses threshold.
-// Shows: [HH:MM:SS] WHO -> query  | snippet (truncated)
+// ── TEACHER Q&A ───────────────────────────────────────────────────────────────
+// Emergent only — fired when SearchCortex pressure crosses threshold. This is
+// NOT a web search: the question goes to claude_teacher.py (Claude as a tutor).
+// No internet/browsing — just the Anthropic API. Shows newest at the bottom:
+//   [HH:MM:SS] WHO -> question  | teaching reply (truncated)
 fn draw_searches(f: &mut Frame, area: Rect, s: &SharedState) {
     if area.height < 2 { return; }
     let inner_w = area.width.saturating_sub(4) as usize;
-    let items: Vec<ListItem> = s.search_history.iter().map(|ev| {
+    let visible = area.height.saturating_sub(2).max(1) as usize;
+    let total   = s.search_history.len();
+    let start   = total.saturating_sub(visible);   // tail — newest questions
+    let items: Vec<ListItem> = s.search_history[start..].iter().map(|ev| {
         let (label, color) = if ev.speaker == "nova" {
             ("Nova  ", Color::Blue)
         } else {
@@ -727,21 +796,48 @@ fn draw_searches(f: &mut Frame, area: Rect, s: &SharedState) {
         List::new(items)
             .block(Block::default()
                 .title(Span::styled(
-                    " WEB SEARCH  (emergent -- fires when curiosity / unknown-word / pronunciation pressure crosses threshold)",
+                    " TEACHER  (emergent -- Nova/Simona ask Claude-as-tutor; NO web -- fires on curiosity / unknown-word / pronunciation pressure)",
                     Style::default().fg(Color::Yellow)))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Yellow))),
         area,
     );
+
+    if total > visible {
+        let mut sb = ScrollbarState::new(total).position(start);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight).begin_symbol(None).end_symbol(None),
+            area.inner(&Margin { vertical: 1, horizontal: 0 }),
+            &mut sb,
+        );
+    }
 }
 
 // ── CONVERSATION ──────────────────────────────────────────────────────────────
 
-fn draw_chat(f: &mut Frame, area: Rect, s: &SharedState) {
+fn draw_chat(f: &mut Frame, area: Rect, s: &SharedState, ui: &mut UiState) {
     let inner_h = area.height.saturating_sub(2) as usize;
-    let start   = s.chat_history.len().saturating_sub(inner_h);
+    let visible = inner_h.max(1);
+    ui.chat_visible = visible;
 
-    let items: Vec<ListItem> = s.chat_history[start..].iter().map(|line| {
+    let total = s.chat_history.len();
+
+    // Anchor the viewport while scrolled up: if new lines arrived at the bottom
+    // since last frame, push the scroll offset up by the same amount so the
+    // lines the user is reading don't drift. (No-op while following.)
+    if !ui.chat_follow && total > ui.last_chat_len {
+        ui.chat_scroll = ui.chat_scroll.saturating_add(total - ui.last_chat_len);
+    }
+    ui.last_chat_len = total;
+
+    let max_scroll = total.saturating_sub(visible);
+    if ui.chat_follow { ui.chat_scroll = 0; }
+    ui.chat_scroll = ui.chat_scroll.min(max_scroll);
+
+    let end   = total.saturating_sub(ui.chat_scroll);
+    let start = end.saturating_sub(visible);
+
+    let items: Vec<ListItem> = s.chat_history[start..end].iter().map(|line| {
         let (label, color, bold) = match line.speaker.as_str() {
             "nova"       => ("Nova        |", Color::Blue,    true),
             "simona"     => ("Simona      |", Color::Magenta, true),
@@ -771,15 +867,24 @@ fn draw_chat(f: &mut Frame, area: Rect, s: &SharedState) {
         ]))
     }).collect();
 
-    let title_style = if s.brain.story_active {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    let scrolled = ui.chat_scroll > 0;
+    let title_color = if scrolled { Color::Cyan }
+                      else if s.brain.story_active { Color::Yellow }
+                      else { Color::DarkGray };
+    let title_style = if scrolled || s.brain.story_active {
+        Style::default().fg(title_color).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(title_color)
     };
-    let title_txt = if s.brain.story_active {
-        " CONVERSATION  [STORY: NodeVortex / Nova / Simona] "
+    let base = if s.brain.story_active {
+        " CONVERSATION  [STORY: NodeVortex / Nova / Simona]"
     } else {
-        " CONVERSATION "
+        " CONVERSATION"
+    };
+    let title_txt = if scrolled {
+        format!("{base}  [scrolled +{}  PgDn/End=resume] ", ui.chat_scroll)
+    } else {
+        format!("{base}  (PgUp/Home=scroll back) ")
     };
 
     f.render_widget(
@@ -787,11 +892,19 @@ fn draw_chat(f: &mut Frame, area: Rect, s: &SharedState) {
             .block(Block::default()
                 .title(Span::styled(title_txt, title_style))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(
-                    if s.brain.story_active { Color::Yellow } else { Color::DarkGray }
-                ))),
+                .border_style(Style::default().fg(title_color))),
         area,
     );
+
+    // Scrollbar on the right border (only when there's overflow to scroll).
+    if total > visible {
+        let mut sb = ScrollbarState::new(total).position(start);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight).begin_symbol(None).end_symbol(None),
+            area.inner(&Margin { vertical: 1, horizontal: 0 }),
+            &mut sb,
+        );
+    }
 }
 
 // ── INPUT PANEL ───────────────────────────────────────────────────────────────

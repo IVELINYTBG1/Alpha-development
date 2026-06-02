@@ -46,18 +46,31 @@ There is no test suite. Verification is done by:
               └─────────────────────────┬──────────────────┘
                                         │ PyO3
                                         ▼
-                  ┌────────────────────────────────────────────┐
-                  │ brain.py — NeuromorphicBrain               │
-                  │   Phill (shared voltage field)             │
-                  │   NovaBrain (7 cortical regions)           │
-                  │   SimonaBrain (6 limbic regions)           │
-                  │   ThoughtPipe × 2 (rumination → leaks)     │
-                  │   MultimodalImprinter (face+voice+motion)  │
-                  │   VoiceIdentityLearner                     │
-                  │   SharedSemanticDictionary (spike-space)   │
-                  │   DefaultModeNetwork + IntrinsicMotivation │
-                  │   BrainTTS × 2 (independent voice channels)│
-                  └────────────────────────────────────────────┘
+                  ┌────────────────────────────────────────────────────┐
+                  │ brain.py — NeuromorphicBrain                       │
+                  │   Phill (shared voltage field)                     │
+                  │   NovaBrain (7 cortical) / SimonaBrain (6 limbic)   │
+                  │   Neuromodulators ×2 (DA·5HT·GABA·ACh·NE·oxytocin)  │
+                  │   Amygdala ×2 (salience/threat → arousal)          │
+                  │   BasalGanglia ×2 (action selection: speak/search/ │
+                  │     babble/rest, dopamine-gated)                   │
+                  │   Cerebellum ×2 (motor coordination/timing)        │
+                  │   ReasoningEngine ×2 (deliberate + solve())        │
+                  │   EpisodicMemory ×2 + SleepCycle (replay/dream)    │
+                  │   ThoughtPipe ×2 · WorkingMemory ×2 · DMN ·         │
+                  │     IntrinsicMotivation · SearchCortex ×2          │
+                  │   MultimodalImprinter · VoiceIdentityLearner       │
+                  │   SharedSemanticDictionary (spike-space lexicon)   │
+                  │   BrainTTS ×2 · MotorArticulator ×2 · FormantSynth │
+                  │   PersonalityLink (gated secret whisper channel)   │
+                  └──────────────────────┬─────────────────────────────┘
+                                         │ ClaudeTeacherBackend (async)
+                                         ▼  claude_teacher.py → Anthropic API
+                  ┌────────────────────────────────────────────────────┐
+                  │ Claude as TUTOR (not web search): teaches HOW to    │
+                  │ think, voices/translates their impulse (scaffold),  │
+                  │ per-persona, typo guard, defers values to architect │
+                  └────────────────────────────────────────────────────┘
 ```
 
 Threads run independently; they communicate only through the `ArcSwap<SharedState>` (lock-free) and `Mutex<Option<...>>` for pending input/STT results. There is exactly one Python interpreter, owned by the brain thread (`Python::with_gil` for the lifetime of the loop).

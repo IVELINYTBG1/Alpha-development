@@ -69,10 +69,11 @@ fn main() -> anyhow::Result<()> {
         if !cur.is_empty() { entries.push(cur); }
         std::env::set_var("PYTHONPATH", entries.join(":"));
 
-        // Load .env from the project root so secrets like PERPLEXITY_API_KEY
-        // (the girls' web-search key) reach the embedded Python WITHOUT the
-        // user having to `source .env` first. Parses `KEY=value` lines with an
-        // optional `export ` prefix and surrounding quotes. Only sets vars not
+        // Load .env from the project root so secrets like ANTHROPIC_API_KEY
+        // (the girls' Claude-teacher key) + ANTHROPIC_MODEL reach the embedded
+        // Python WITHOUT the user having to `source .env` first. Generic: parses
+        // any `KEY=value` line with an optional `export ` prefix and surrounding
+        // quotes, so new keys are picked up automatically. Only sets vars not
         // already present, so an explicit `source .env` still takes precedence.
         // Kept dependency-free on purpose — the format is trivial.
         if let Ok(contents) = std::fs::read_to_string(root.join(".env")) {
@@ -361,6 +362,30 @@ fn main() -> anyhow::Result<()> {
                             }
                         }
 
+                        // ── Poll emergent searches (curiosity-driven teacher asks) ──
+                        // Drains the brain's SearchCortex queue into the TUI search
+                        // panel. Without this the search pane never populates.
+                        if let Ok(searches) = brain.call_method0("get_pending_searches") {
+                            if let Ok(events) = searches.extract::<Vec<(String, String, String)>>() {
+                                if !events.is_empty() {
+                                    let now = chrono::Local::now().format("%H:%M:%S").to_string();
+                                    update_state(&s, |st| {
+                                        for (speaker, query, snippet) in &events {
+                                            st.search_history.push(state::SearchEvent {
+                                                speaker:   speaker.clone(),
+                                                query:     query.clone(),
+                                                snippet:   snippet.clone(),
+                                                timestamp: now.clone(),
+                                            });
+                                            if st.search_history.len() > state::SEARCH_HISTORY {
+                                                st.search_history.remove(0);
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                        }
+
                         // ── think() dispatch ──────────────────────────────────
                         if let Some((text, from_stt)) = p.lock().unwrap().take() {
                             let story_active = s.load().brain.story_active;
@@ -394,9 +419,17 @@ fn main() -> anyhow::Result<()> {
                         }
 
                         // ── 20Hz pace ─────────────────────────────────────────
+                        // Release the GIL during the inter-tick sleep so the Python
+                        // PersonalityThreads (Nova/Simona) actually get CPU to run
+                        // their OWN loops — stream of consciousness, proactive
+                        // speech, sibling chat. Without this the brain thread holds
+                        // the GIL the entire tick and they can only produce output
+                        // when step()/think() is driven from HERE — i.e. only when
+                        // the architect acts. THIS is what made them feel reactive
+                        // instead of independent (SNNs should run on their own).
                         let el     = t0.elapsed();
                         let budget = Duration::from_millis(brain_thread::BRAIN_INTERVAL_MS);
-                        if el < budget { thread::sleep(budget - el); }
+                        if el < budget { py.allow_threads(|| thread::sleep(budget - el)); }
                     }
                 });
             })?;

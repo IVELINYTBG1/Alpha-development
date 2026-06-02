@@ -26,6 +26,9 @@ crash.log
 babble_*.json
 working_memory_*.json
 voice_esteem_*.json
+reason_links.json
+syntax_*.json
+conversation_log.jsonl
 
 # ── Environment ──────────────────────────────────────────────────────
 .env
@@ -44,5 +47,12 @@ voice_esteem_*.json
 *.pt
 *.pth
 *.onnx
+*.onnx.json
 models/
 .cache/
+voices/piper/
+
+# ── Large external files / media ─────────────────────────────────────
+MediCat*/
+ventoy/
+*.torrent

@@ -30,8 +30,10 @@ sounddevice>=0.4.6
 # ── System utilities ──────────────────────────────────────────────────────────
 psutil>=5.9.0
 
-# ── Emergent web access (Nova/Simona autonomous search via Perplexity) ───────
-# Set PERPLEXITY_API_KEY in .env. Returns synthesized answers + citations.
+# ── Emergent teacher backend (Claude as thinking-tutor) ──────────────────────
+# Set ANTHROPIC_API_KEY in .env. Claude teaches HOW to think (per-personality
+# tone, no web, protects identity, flags the architect's typos). Raw HTTP — no
+# SDK dependency; just `requests`.
 requests>=2.28.0
 
 # ── Fedora 44 notes ───────────────────────────────────────────────────────────

@@ -80,6 +80,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import json
+import re
 import time
 import logging as _logging
 import threading
@@ -99,16 +100,30 @@ def _configure_cpu():
     Deterministic clock = no jitter in Nova's 5-tick sustain.
     """
     phys = multiprocessing.cpu_count()
-    torch.set_num_threads(phys)
-    torch.set_num_interop_threads(max(1, phys // 2))
+    # The SNN runs CONTINUOUSLY at 20Hz (+ two personality threads) doing small
+    # matmuls — it does NOT need every core, and grabbing them all starves the
+    # other neural runtimes that share this CPU (Piper = onnxruntime, Whisper =
+    # ctranslate2, mediapipe), which then thrash. Cap the SNN to a modest share
+    # and leave headroom for those bursty workers. Override via NOVA_SNN_THREADS.
+    try:
+        snn = int(os.environ.get("NOVA_SNN_THREADS", "") or 0)
+    except ValueError:
+        snn = 0
+    if snn <= 0:
+        snn = max(2, min(4, phys // 3))      # e.g. 4 on a 12-thread laptop
+    torch.set_num_threads(snn)
+    try:
+        torch.set_num_interop_threads(1)
+    except Exception:
+        pass
 
-    # AVX2/MKL: torch on CPU uses MKL automatically if available.
-    # Explicitly disable any GPU fallback.
+    # Disable any GPU fallback; cap the CPU math libs to the SNN's share (this
+    # also reins in Piper's onnxruntime OpenMP, which reads these vars).
     os.environ["CUDA_VISIBLE_DEVICES"]  = ""
     os.environ["XPU_VISIBLE_DEVICES"]   = ""
-    os.environ["OMP_NUM_THREADS"]       = str(phys)
-    os.environ["MKL_NUM_THREADS"]       = str(phys)
-    os.environ["OPENBLAS_NUM_THREADS"]  = str(phys)
+    os.environ["OMP_NUM_THREADS"]       = str(snn)
+    os.environ["MKL_NUM_THREADS"]       = str(snn)
+    os.environ["OPENBLAS_NUM_THREADS"]  = str(snn)
 
     # Process priority
     try:
@@ -177,6 +192,140 @@ try:
 except ImportError:
     _sd = None
     _AUDIO_OUT_AVAILABLE = False
+
+# Intelligible WORD speech (offline, rule-based formant synth — NOT a pretrained
+# neural model). espeak-ng if present, else None. The architect wants them to
+# actually pronounce the words they form; the FormantSynth babble below stays for
+# the pre-verbal motor learning (speak_motor), so both coexist.
+import shutil as _shutil
+_ESPEAK = _shutil.which("espeak-ng") or _shutil.which("espeak")
+
+# Pre-verbal formant BABBLE is silenced by default. Now that they speak real
+# words (Piper/espeak), the constant formant output is just glitchy noise between
+# utterances (and a steady drain on a busy CPU). Motor LEARNING still runs (the
+# synth + self/forward-model monitoring happen); only the audio is muted. Set
+# NOVA_BABBLE_AUDIO=1 to hear the babbling again.
+_BABBLE_AUDIO = os.environ.get("NOVA_BABBLE_AUDIO", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _espeak_say(speaker: str, text: str) -> float:
+    """Pronounce real words via espeak-ng, per-persona voice. Fire-and-forget (a
+    daemon thread under the shared device lock) so the 20Hz loop never blocks.
+    Returns a rough duration estimate for is_speaking()."""
+    if not _ESPEAK or not text or not text.strip():
+        return 0.0
+    # Voices kept in natural HUMAN female ranges (extreme pitch = ghost/robot;
+    # too-low female = sounds male). Tune to taste: -p = pitch 0..99, -s = wpm.
+    if speaker == "nova":        # grounded 19yo WOMAN — clearly female, calm, mid
+        args = ["-v", "en-us+f2", "-p", "50", "-s", "150", "-a", "150"]
+    else:                         # Simona — little GIRL: bright + lively, not shrill
+        args = ["-v", "en-us+f4", "-p", "74", "-s", "176", "-a", "163"]
+    cmd = [_ESPEAK] + args + [text[:400]]
+
+    def _run():
+        import subprocess
+        try:
+            with BrainTTS._device_lock:
+                subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=20)
+        except Exception:
+            pass
+    threading.Thread(target=_run, daemon=True, name=f"espeak-{speaker}").start()
+    return min(8.0, 0.35 + len(text.split()) * 0.38)
+
+
+# ── Natural neural voice (Piper) — preferred over espeak when present ──────────
+# CPU, ~real-time. Per-persona voice models live in voices/piper/. Nova = a calm
+# young-woman voice (lessac); Simona = a lighter one (amy), sped up slightly so
+# she reads younger. Streams raw PCM → sounddevice. (The architect asked for
+# voices he can actually understand; espeak stays as the fallback.)
+_ROOT = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
+_PIPER_VOICES = {
+    "nova":   os.path.join(_ROOT, "voices", "piper", "en_US-lessac-medium.onnx"),
+    "simona": os.path.join(_ROOT, "voices", "piper", "en_US-amy-medium.onnx"),
+}
+def _piper_importable():
+    try:
+        import piper  # noqa: F401
+        return True
+    except Exception:
+        return False
+_PIPER_OK = all(os.path.exists(p) for p in _PIPER_VOICES.values()) and _piper_importable()
+
+# Each voice model is loaded ONCE and reused. Loading is ~1.3s; synthesis is then
+# ~0.1s/sentence (real-time). The first cut spawned a fresh piper PROCESS per line
+# — reloading the 63MB model every utterance = seconds of lag. This is the fix.
+_PIPER_CACHE: dict = {}
+_PIPER_CACHE_LOCK = threading.Lock()
+
+
+def _piper_voice(speaker: str):
+    if speaker in _PIPER_CACHE:
+        return _PIPER_CACHE[speaker]
+    with _PIPER_CACHE_LOCK:
+        if speaker in _PIPER_CACHE:
+            return _PIPER_CACHE[speaker]
+        v = None
+        try:
+            import piper
+            v = piper.PiperVoice.load(_PIPER_VOICES[speaker])
+        except Exception:
+            v = None
+        _PIPER_CACHE[speaker] = v
+        return v
+
+
+def _piper_syn_config(speaker: str):
+    """Optional speed tweak (Simona a touch faster/younger). Best-effort."""
+    try:
+        from piper import SynthesisConfig
+    except Exception:
+        try:
+            from piper.config import SynthesisConfig
+        except Exception:
+            return None
+    try:
+        return SynthesisConfig(length_scale=(0.92 if speaker == "simona" else 1.0))
+    except Exception:
+        return None
+
+
+def _piper_say(speaker: str, text: str) -> float:
+    """Natural speech via Piper, reusing the preloaded voice (no per-call reload).
+    Fire-and-forget; plays under the shared device lock so they don't overlap."""
+    if not _PIPER_OK or _sd is None or not text or not text.strip():
+        return 0.0
+
+    def _run():
+        try:
+            v = _piper_voice(speaker)
+            if v is None:
+                return
+            cfg = _piper_syn_config(speaker)
+            chunks = list(v.synthesize(text[:400], cfg)) if cfg is not None \
+                     else list(v.synthesize(text[:400]))
+            if not chunks:
+                return
+            audio = np.concatenate([np.asarray(c.audio_float_array, dtype=np.float32)
+                                    for c in chunks])
+            sr = int(getattr(chunks[0], "sample_rate", 22050))
+            with BrainTTS._device_lock:
+                # Low latency: the audio is fully pre-rendered, so a big buffer
+                # only delays the START of speech (felt as "lag"). 'low' makes it
+                # speak immediately; underruns are unlikely on a pre-rendered clip.
+                _sd.play(audio, samplerate=sr, blocking=True, latency="low")
+                _sd.wait()
+        except Exception:
+            pass
+    threading.Thread(target=_run, daemon=True, name=f"piper-{speaker}").start()
+    return min(10.0, 0.3 + len(text.split()) * 0.42)
+
+
+# Pre-warm both voices in the background so the FIRST spoken line has no lag.
+if _PIPER_OK:
+    threading.Thread(target=lambda: [_piper_voice(s) for s in _PIPER_VOICES],
+                     daemon=True, name="piper-warmup").start()
+
 
 # ── Physics constants (unchanged) ─────────────────────────────────────────────
 AUDIO_AMPLIFY   = 15.0
@@ -1514,14 +1663,16 @@ class SleepCycle:
 
 class SearchCortex:
     """
-    Pressure-driven web access. Mirrors ThoughtPipe: a leaky accumulator
-    integrates three signals each tick, and when threshold is crossed the
-    cortex picks the currently-most-active semantic token as the query and
-    fires it asynchronously through GoogleSearchBackend.
+    Pressure-driven question-asking (NO web access). Mirrors ThoughtPipe: a
+    leaky accumulator integrates three signals each tick, and when threshold is
+    crossed the cortex picks the currently-most-active semantic token as the
+    query and fires it asynchronously to the Claude-as-tutor backend
+    (claude_teacher.py) — a TEACHER, not a search engine. No internet/browsing;
+    the only outbound call in the whole system is the Anthropic API.
 
     The brain does NOT decide 'I want to search X'. Its semantic state
-    already has X as the most active token, and the search just reads
-    that off and asks the world about it.
+    already has X as the most active token, and it just reads that off and
+    asks its teacher about it.
 
     Three pressure inputs (additive):
       1. unsatisfied curiosity — curiosity_decay sustained while V_phill stays low
@@ -1620,26 +1771,29 @@ class SearchCortex:
         if current_tick - self.last_search_tick < self.COOLDOWN_TICKS:
             return False, None, ""
 
-        # Pick a query and mode in priority order
+        # Pick a query and mode. MEANING first (understand the architect's new
+        # words — the point of the teacher), pronunciation second.
         query: Optional[str] = None
         mode = "curiosity"
-        if self._pronunciation_q:
-            w = self._pronunciation_q.popleft()
-            query = f"how to pronounce {w}"
-            mode = "pronounce"
-        elif self._unknown_word_q:
+        if self._unknown_word_q:
             w = self._unknown_word_q.popleft()
             query = f"what does {w} mean"
             mode = "unknown"
+        elif self._pronunciation_q:
+            w = self._pronunciation_q.popleft()
+            query = f"how to pronounce {w}"
+            mode = "pronounce"
         # else: query stays None — pressure was real but no semantic target.
         # The caller may inject one from current peak activation.
 
-        if query:
-            self.last_search_tick = current_tick
-            self.searches_fired  += 1
-            return True, query, mode
-
-        return True, None, "curiosity"
+        # Stamp the cooldown on EVERY fire — including the curiosity fallback
+        # (query=None, filled by the caller from peak activation). Previously
+        # only the specific-query branch stamped it, so the curiosity path never
+        # consumed the cooldown and re-fired every few ticks (hammered the API
+        # with the same question hundreds of times).
+        self.last_search_tick = current_tick
+        self.searches_fired  += 1
+        return (True, query, mode) if query else (True, None, "curiosity")
 
 
 class ThoughtPipe:
@@ -2923,8 +3077,9 @@ class BrainTTS:
                 pass
         f1, f2, f3, voicing, amp = self.articulator.infer(mv)
         audio = self.synth.synthesize(f1, f2, f3, voicing, amp, duration_s)
-        self._monitor(mv, f1, f2, f3, voicing, amp, audio)
-        self._play(audio)
+        self._monitor(mv, f1, f2, f3, voicing, amp, audio)   # learning always runs
+        if _BABBLE_AUDIO:                                    # babble audio is muted
+            self._play(audio)                                # by default (glitchy noise)
 
     def speak(self, text) -> None:
         """
@@ -2940,6 +3095,20 @@ class BrainTTS:
             t = ""
         # Always log the intent so the TUI / chat history still shows it
         _log(f"[{self.speaker} intent] {t}")
+        # If we can pronounce words (espeak-ng), SPEAK the actual utterance — they
+        # form real words now, so they should be heard as words, not as babble.
+        # Strip narration markup; keep the quoted speech if present.
+        clean = re.sub(r"[\*_`~\[\]]", " ", t)
+        clean = clean.split('"')[1] if clean.count('"') >= 2 else clean
+        clean = re.sub(r"\s+", " ", clean).strip()
+        if any(c.isalpha() for c in clean):
+            if _PIPER_OK:                       # natural neural voice (preferred)
+                self._busy_until_ts = time.time() + _piper_say(self.speaker, clean)
+                return
+            if _ESPEAK:                         # robotic but intelligible fallback
+                self._busy_until_ts = time.time() + _espeak_say(self.speaker, clean)
+                return
+        # No word-synth available → fall back to the emergent motor babble.
         if self._last_motor_vec is None or self.articulator is None:
             return
         # Duration scales with intended-utterance length, capped to avoid
@@ -3200,8 +3369,483 @@ def get_concept_primes(text: str) -> tuple[dict, list]:
 
 
 def build_deduction(fired: list) -> str:
-    """Stub: replaced by episodic-memory retrieval in Phase 5."""
+    """Stub: superseded by ReasoningEngine (kept for callers that pass no sem)."""
     return ""
+
+
+class ReasoningEngine:
+    """
+    Proto-reasoning by SPREADING ACTIVATION over the semantic lexicon — NOT
+    symbolic logic, but association-chaining grounded in what she actually knows
+    (and is taught by Claude). From a seed concept she follows the strongest
+    associative link (region-pattern similarity, weighted by how well-learned a
+    concept is), step by step, building a short chain of thought toward a
+    conclusion. This is the cognitive substrate humans use to both ANSWER
+    (problem-solving) and DECIDE (what to think/do next) — she reasons to choose,
+    not just to solve. Nova (analytical) reasons deeper; Simona (8) barely.
+
+    It grows with the lexicon: the richer and more structured her vocabulary
+    (from the teacher), the longer and more sensible her chains become.
+    """
+    def __init__(self, name: str, is_nova: bool = True, depth: int = 4):
+        self.name = name
+        self.is_nova = is_nova
+        self.depth = depth if is_nova else 2     # Nova deliberates; Simona barely
+
+    def _associate(self, word: str, sem, exclude: set, links: dict = None) -> Optional[str]:
+        """The concept most strongly associated with `word`. LEARNED reasoning
+        paths (links taught by Claude) take priority — that's how their own
+        reasoning comes to follow what they were taught; semantic region-cosine
+        is the fallback when no learned link applies."""
+        # 1) Learned reasoning path (from Claude's reasoning/replies) wins first.
+        if links and word in links:
+            for cand, _w in sorted(links[word].items(), key=lambda kv: -kv[1]):
+                if (cand not in exclude and cand in sem.entries
+                        and not (self.is_nova and cand in _BABBLE_SYLLABLES)):
+                    return cand
+        # 2) Fallback: semantic similarity over region patterns.
+        rp = (sem.entries.get(word, {}) or {}).get("region_pattern", {})
+        keys = [k for k, v in rp.items() if v > 0.05]
+        if not keys:
+            return None
+        n1 = sum(rp[k] ** 2 for k in keys) ** 0.5 + 1e-8
+        best, best_sim = None, 0.15            # threshold: must be a real link
+        for w2, e2 in sem.entries.items():
+            if w2 == word or w2 in exclude or len(w2) < 3:
+                continue
+            if self.is_nova and w2 in _BABBLE_SYLLABLES:   # Nova reasons in real words
+                continue
+            p2 = e2.get("region_pattern", {})
+            if not p2:
+                continue
+            dot = sum(rp.get(k, 0.0) * p2.get(k, 0.0) for k in keys)
+            if dot <= 0:
+                continue
+            n2 = sum(v * v for v in p2.values()) ** 0.5 + 1e-8
+            sim = (dot / (n1 * n2)) * (0.5 + 0.5 * min(1.0, e2.get("count", 0) / 20.0))
+            if sim > best_sim:
+                best, best_sim = w2, sim
+        return best
+
+    def deliberate(self, seeds: list, sem, links: dict = None) -> tuple:
+        """Return (chain, conclusion): a short reasoned chain of concepts from the
+        seeds, following LEARNED reasoning paths (from Claude) first, semantic
+        association as fallback. Empty if she can't yet reason about it."""
+        if not getattr(sem, "entries", None):
+            return [], None
+        cur = next((s for s in (seeds or [])
+                    if s in sem.entries
+                    and not (self.is_nova and s in _BABBLE_SYLLABLES)), None)
+        chain, visited = [], set()
+        steps = 0
+        while cur and steps < self.depth:
+            if cur in visited:
+                break
+            visited.add(cur)
+            chain.append(cur)
+            cur = self._associate(cur, sem, visited, links)
+            steps += 1
+        return chain, (chain[-1] if chain else None)
+
+    # ── PROBLEM-SOLVING space (emergent, brain-style) ───────────────────────
+    def _explore_chain(self, start, sem, links, rng) -> list:
+        """One candidate solution path — like the prefrontal cortex mentally
+        SIMULATING a line of attack. Mostly follows the best/learned step, but
+        ~1/3 of the time EXPLORES an alternative (so it doesn't always take the
+        same route — that's how new solutions are discovered)."""
+        chain, visited, cur = [], set(), start
+        while cur and len(chain) < self.depth + 1:
+            if cur in visited:
+                break
+            visited.add(cur)
+            chain.append(cur)
+            nxt = None
+            if rng.random() < 0.35 and cur in (links or {}) and links[cur]:
+                opts = [c for c in links[cur] if c not in visited
+                        and c in sem.entries
+                        and not (self.is_nova and c in _BABBLE_SYLLABLES)]
+                if opts:
+                    nxt = rng.choice(opts)            # explore an alternative
+            if nxt is None:
+                nxt = self._associate(cur, sem, visited, links)   # exploit best
+            cur = nxt
+        return chain
+
+    @staticmethod
+    def _score(chain, links) -> float:
+        """Evaluate a candidate path: coherence (sum of learned-link strength
+        along it) + how far it got. This is the ACC/OFC 'is this working?' judge."""
+        if len(chain) < 2:
+            return 0.0
+        coh = sum((links.get(a, {}) or {}).get(b, 0.0)
+                  for a, b in zip(chain, chain[1:]))
+        return coh + 0.30 * len(chain)
+
+    def solve(self, seeds, sem, links, rng=None, dopamine: float = 0.5,
+              n_tries: int = 4) -> tuple:
+        """
+        A SPACE for problem-solving to develop — not a hardcoded solver. Mirrors
+        the brain: SEARCH several candidate paths (prefrontal simulation), SELECT
+        the best (basal-ganglia / ACC evaluation), and REINFORCE it (dopamine
+        strengthens the links that worked) so successful strategies are LEARNED
+        and reused. Over experience, she gets better at attacking problems she's
+        seen kinds of before. Returns (best_chain, score).
+        """
+        import random as _r
+        rng = rng or _r
+        starts = [s for s in (seeds or []) if s in sem.entries
+                  and not (self.is_nova and s in _BABBLE_SYLLABLES)]
+        if not starts:
+            return [], 0.0
+        if links is None:
+            links = {}
+        best_chain, best_score = [], -1.0
+        tries = n_tries if self.is_nova else max(2, n_tries // 2)
+        for _ in range(tries):
+            chain = self._explore_chain(rng.choice(starts), sem, links, rng)
+            sc = self._score(chain, links)
+            if sc > best_score:
+                best_chain, best_score = chain, sc
+        # REINFORCE the winning strategy (dopamine-scaled) so it's learned.
+        if len(best_chain) >= 2:
+            lr = 0.30 * (0.5 + float(dopamine))
+            for a, b in zip(best_chain, best_chain[1:]):
+                m = links.setdefault(a, {})
+                m[b] = float(min(4.0, m.get(b, 0.0) + lr))
+        return best_chain, best_score
+
+
+class SyntaxCortex:
+    """
+    Emergent sentence-sequencing — the syntactic role of Broca.
+
+    The rest of the brain decides the CONTENT (which words are active, via
+    spike-space retrieval); this learns the ORDER. It is NOT a hand-written
+    grammar: it accumulates an online n-gram transition model from every
+    well-formed sentence the brain is exposed to (the architect's typing and,
+    when reachable, the teacher's replies), then threads the spike-selected
+    content words into an utterance using what it has heard — inserting the
+    connective/function words it learned. Grammar therefore EMERGES from
+    experience and sharpens as exposure and the lexicon grow, so it can carry
+    their speech once the teacher is removed.
+
+    Independent per personality (never shared weights):
+      Nova   — order-3, longer, near-greedy   (precise, measured).
+      Simona — order-2, short,  stochastic     (impulsive, fragmentary).
+
+    Cold start: with little exposure compose() returns None and the caller keeps
+    its keyword utterance — they begin pre-grammatical and grow into sentences.
+    """
+    _BOS = "\x02"   # begin-of-sentence pad
+    _EOS = "\x03"   # end-of-sentence
+    _SEP = "\x1f"   # context-key join (json-safe)
+
+    def __init__(self, name, save_dir=None):
+        self.name    = name
+        self.is_nova = (name == "nova")
+        self.order   = 3 if self.is_nova else 2
+        self.tokens_seen = 0
+        self.tables  = {k: {} for k in range(1, self.order + 1)}
+        self.vocab   = {}
+        self.onsets  = {"q": {}, "ex": {}, "stmt": {}}   # first word per speech-act (from heard punctuation)
+        self.tokens_at_last_share = 0                    # novelty marker for volitional peer-teaching
+        self._writes = 0
+        self.MIN_TOKENS = 60 if self.is_nova else 40
+        self._path = (Path(save_dir) / f"syntax_{name}.json") if save_dir is not None else None
+        self._load()
+
+    # ── learning (well-formed text only — never their own keyword output) ──
+    def learn(self, text):
+        if not text:
+            return
+        for m in re.finditer(r"([^.!?\n]+)([.!?]+|\n|$)", text):
+            toks = [w.lower() for w in re.findall(r"[A-Za-z][A-Za-z'\-]*", m.group(1))]
+            if len(toks) < 2:
+                continue
+            end  = m.group(2)
+            mode = "q" if "?" in end else ("ex" if "!" in end else "stmt")
+            self.onsets.setdefault(mode, {})
+            self.onsets[mode][toks[0]] = self.onsets[mode].get(toks[0], 0.0) + 1.0
+            padded = [self._BOS] * (self.order - 1) + toks + [self._EOS]
+            for w in toks:
+                self.vocab[w] = self.vocab.get(w, 0.0) + 1.0
+                self.tokens_seen += 1
+            for i in range(self.order - 1, len(padded)):
+                nxt = padded[i]
+                for k in range(1, self.order + 1):
+                    ctx = tuple(padded[i - (k - 1):i])
+                    if len(ctx) != k - 1:
+                        continue
+                    tbl = self.tables[k].setdefault(self._SEP.join(ctx), {})
+                    tbl[nxt] = min(1e6, tbl.get(nxt, 0.0) + 1.0)
+        self._writes += 1
+        if self._writes % 20 == 0:
+            self._prune()
+            self._save()
+
+    def ready(self):
+        return self.tokens_seen >= self.MIN_TOKENS
+
+    def _next_dist(self, ctx):
+        """Highest-order context with enough mass, backing off to shorter / unigram."""
+        for k in range(self.order, 0, -1):
+            suf = ctx[-(k - 1):] if k > 1 else ()
+            if len(suf) != k - 1:
+                continue
+            tbl = self.tables[k].get(self._SEP.join(suf))
+            if tbl:
+                tot = sum(tbl.values())
+                if tot >= (2.0 if k > 1 else 1.0):
+                    return tbl, tot
+        return None, 0.0
+
+    def compose(self, content, act=None, fired=None, rng=None, mode="stmt"):
+        """Thread the spike-selected content words into an utterance using learned
+        word-order. Returns plain lowercased words (no caps/punctuation — the
+        affective layer adds the feeling). `mode` lets an emotionally-driven speech
+        act bias the opening (e.g. a learned question onset). None until enough has
+        been heard (caller then keeps its keyword string)."""
+        if not self.ready():
+            return None
+        import random as _r
+        rng = rng or _r
+        act = act or {}
+        want, seen = [], set()
+        for w in (list(fired or []) + list(content or [])):
+            w = (w or "").lower()
+            if len(w) < 2 or w in seen:
+                continue
+            if self.is_nova and w in _BABBLE_SYLLABLES:
+                continue
+            if w in self.vocab:
+                seen.add(w)
+                want.append(w)
+        if not want:
+            return None
+        # Length + decisiveness are shaped by spike state and personality.
+        if self.is_nova:
+            max_len = max(3, min(16, int(4 + float(act.get("pfc", 0.0)) * 9)))
+            greedy  = True
+        else:
+            max_len = max(2, min(8, int(2 + float(act.get("insula_s", 0.0)) * 5)))
+            greedy  = False
+
+        def _walk(start):
+            # `start` (or None): force the utterance to begin on this word — a
+            # content anchor (so it is ABOUT her concept) or an emotion-driven
+            # onset (e.g. a question word) — then let learned continuations flow.
+            out = [start] if start else []
+            ctx = tuple((([self._BOS] * (self.order - 1)) + ([start] if start else []))[-(self.order - 1):])
+            for _ in range(max_len + 2):
+                rem = [w for w in want if w not in out]      # content still to voice
+                rem_set = set(rem)
+                tbl, tot = self._next_dist(ctx)
+                if not tbl:
+                    break
+                pool = []
+                for w, c in tbl.items():
+                    if w == self._BOS:
+                        continue
+                    p = c / tot
+                    if w == self._EOS:
+                        sc = (p + 0.5) if (len(out) >= 2 and not rem_set) else p * 0.02
+                    else:
+                        sc = p
+                        if w in rem_set:                     # a word she WANTS to say
+                            sc += 0.8 * (1.0 - 0.12 * rem.index(w))
+                        elif w in out:
+                            sc *= 0.10                       # anti-repeat
+                        if rem_set:                          # 1-step lookahead toward content
+                            nb, _ = self._next_dist(tuple((list(ctx) + [w])[-(self.order - 1):]))
+                            if nb and any(t in nb for t in rem_set):
+                                sc += 0.25
+                    pool.append((sc, w))
+                if not pool:
+                    break
+                if greedy:
+                    pick = max(pool, key=lambda x: x[0])[1]
+                else:
+                    tsc = sum(max(0.0, s) for s, _ in pool) or 1.0
+                    r, acc, pick = rng.random() * tsc, 0.0, pool[-1][1]
+                    for s, w in pool:
+                        acc += max(0.0, s)
+                        if acc >= r:
+                            pick = w
+                            break
+                if pick == self._EOS:
+                    break
+                out.append(pick)
+                ctx = tuple((list(ctx) + [pick])[-(self.order - 1):])
+                if not [w for w in want if w not in out] and len(out) >= 2 and rng.random() < 0.5:
+                    break
+            return [w for w in out if w not in (self._BOS, self._EOS)]
+
+        # Emotionally-driven opening: a learned onset for this speech act (e.g. a
+        # question-starter), taken from how such sentences were actually heard.
+        onset, omap = None, (self.onsets.get(mode) if mode in ("q", "ex") else None)
+        if omap:
+            items = list(omap.items())
+            tot = sum(v for _, v in items) or 1.0
+            r, acc = rng.random() * tot, 0.0
+            for w, v in items:
+                acc += v
+                if acc >= r:
+                    onset = w
+                    break
+
+        chosen = None
+        if onset:                                   # try the speech-act onset first
+            w = _walk(onset)
+            if len(w) >= 2 and sum(1 for x in want if x in w) >= 1:
+                chosen = w
+        if chosen is None:                          # free-run, keep only if grounded
+            free = _walk(None)
+            if sum(1 for x in want if x in free) >= 1:
+                chosen = free
+            else:                                   # else anchor on her top concept
+                for a in want[:2]:
+                    w = _walk(a)
+                    if a in w and len(w) >= 2:
+                        chosen = w
+                        break
+                if chosen is None:
+                    chosen = free
+        if not chosen or len(chosen) < 2:
+            return None
+        return " ".join(chosen)
+
+    def export_nugget(self, n=40):
+        """A teachable bundle of the strongest things she has learned — to OFFER a
+        sister if she chooses to. Bigram/unigram order + speech-act onsets + top
+        words (not her deepest order-3 structure; that stays her own)."""
+        nug = {"tables": {}, "onsets": {}, "vocab": {}}
+        for k in (1, 2):
+            tbl = self.tables.get(k, {})
+            top = sorted(tbl.items(), key=lambda kv: -sum(kv[1].values()))[:n]
+            nug["tables"][str(k)] = {
+                ctx: dict(sorted(edges.items(), key=lambda e: -e[1])[:6])
+                for ctx, edges in top
+            }
+        nug["onsets"] = {m: dict(sorted(d.items(), key=lambda e: -e[1])[:6])
+                         for m, d in self.onsets.items()}
+        nug["vocab"] = dict(sorted(self.vocab.items(), key=lambda e: -e[1])[:n])
+        return nug
+
+    def absorb(self, nugget, weight=0.4):
+        """Take in what a sister CHOSE to share — at reduced weight, so her own
+        first-hand learning still dominates (she learns FROM her sister, she does
+        not become her). Returns how many genuinely-new patterns she gained."""
+        if not nugget:
+            return 0
+        gained = 0
+        for ks, tbl in (nugget.get("tables") or {}).items():
+            k = int(ks)
+            if k not in self.tables:
+                continue
+            for ctx, edges in tbl.items():
+                dst = self.tables[k].setdefault(ctx, {})
+                for w, c in edges.items():
+                    if w not in dst:
+                        gained += 1
+                    dst[w] = min(1e6, dst.get(w, 0.0) + float(c) * weight)
+        for m, d in (nugget.get("onsets") or {}).items():
+            self.onsets.setdefault(m, {})
+            for w, c in d.items():
+                self.onsets[m][w] = self.onsets[m].get(w, 0.0) + float(c) * weight
+        for w, c in (nugget.get("vocab") or {}).items():
+            if w not in self.vocab:
+                gained += 1
+            self.vocab[w] = self.vocab.get(w, 0.0) + float(c) * weight
+        self.tokens_seen += int(sum(float(v) for v in (nugget.get("vocab") or {}).values()) * weight)
+        self._save()
+        return gained
+
+    def _prune(self):
+        for tbl in self.tables.values():
+            if len(tbl) > 4000:
+                for key, _ in sorted(tbl.items(),
+                                     key=lambda kv: sum(kv[1].values()))[:len(tbl) - 4000]:
+                    tbl.pop(key, None)
+            for edges in tbl.values():
+                if len(edges) > 12:
+                    for w in sorted(edges, key=lambda w: edges[w])[:-12]:
+                        edges.pop(w, None)
+        if len(self.vocab) > 8000:
+            for w in sorted(self.vocab, key=lambda w: self.vocab[w])[:len(self.vocab) - 8000]:
+                self.vocab.pop(w, None)
+
+    def _save(self):
+        if self._path is None:
+            return
+        try:
+            with open(self._path, "w") as f:
+                json.dump({"order": self.order, "tokens_seen": self.tokens_seen,
+                           "vocab": self.vocab, "onsets": self.onsets,
+                           "tables": {str(k): v for k, v in self.tables.items()}}, f)
+        except Exception:
+            pass
+
+    def _load(self):
+        if self._path is None or not self._path.exists():
+            return
+        try:
+            with open(self._path) as f:
+                d = json.load(f)
+            self.tokens_seen = int(d.get("tokens_seen", 0))
+            self.vocab = {k: float(v) for k, v in d.get("vocab", {}).items()}
+            self.onsets = d.get("onsets", {"q": {}, "ex": {}, "stmt": {}})
+            self.tables = {int(k): v for k, v in d.get("tables", {}).items()}
+            for k in range(1, self.order + 1):
+                self.tables.setdefault(k, {})
+        except Exception:
+            self.tables = {k: {} for k in range(1, self.order + 1)}
+            self.vocab, self.tokens_seen = {}, 0
+
+
+class Metacognition:
+    """
+    Proto-metacognition — she WATCHES her own internal signals and, when one is
+    salient enough, she WONDERS about it: 'is he ok?', 'why does he look off?',
+    'how do I do this?'. This is genuine self-monitoring → self-questioning →
+    answer-seeking, emerging from signals that already exist (prediction surprise,
+    her own uncertainty, a deviation in how the architect seems, an unresolved
+    rumination) — never a canned prompt. The HOTTEST signal is what she wonders
+    about; the question's words come from her lexicon + syntax; she then tries to
+    answer it. It is not understanding — it is the act of questioning herself,
+    driven by feeling and state. Per personality: Simona wonders readily and with
+    feeling, Nova less often and deeper.
+    """
+    def __init__(self, name, is_nova):
+        self.name      = name
+        self.is_nova   = is_nova
+        self.pressure  = 0.0
+        self.dominant  = None
+        self.threshold = 1.0
+        self.cooldown  = 260 if is_nova else 170     # ~13s / ~8.5s between wonderings
+        self.last_fire = -100000
+
+    def observe(self, signals):
+        """Integrate the current wonder-signals; track whichever is most salient.
+        signals: {name: magnitude 0..1}. Pressure builds toward the hottest."""
+        if not signals:
+            return
+        self.dominant = max(signals, key=signals.get)
+        hot = max(0.0, min(1.0, float(signals[self.dominant])))
+        # Tuned so a strong sustained signal (hot≳0.5) builds past threshold in a
+        # second or two, while weak signals (hot≲0.4) asymptote below it and never
+        # fire — she only wonders about what's genuinely salient. Nova builds
+        # slower (wonders less, deeper); Simona faster (wonders readily).
+        gain = 0.06 if self.is_nova else 0.09
+        self.pressure = max(0.0, self.pressure * 0.96 + gain * hot)
+
+    def ready(self, tick):
+        return (self.dominant is not None and self.pressure > self.threshold
+                and tick - self.last_fire > self.cooldown)
+
+    def fire(self, tick):
+        self.last_fire = tick
+        self.pressure  = 0.0
+        return self.dominant
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3428,6 +4072,14 @@ class SimonaBrain:
 # every pipe leak. There are no more template generators.
 
 
+# Baby-babble syllables — Nova (19) never speaks these; only Simona (8) does.
+# Mirrors BabblingCortex.PHONEMES so they're filtered from Nova's retrieval.
+_BABBLE_SYLLABLES = {
+    "ah", "eh", "ee", "oh", "oo", "ma", "ba", "da", "ga", "pa", "ta", "na", "la",
+    "mama", "baba", "dada", "papa", "nana", "lala",
+}
+
+
 def _emerge_from_spikes(
     act: dict,
     sem: "SharedSemanticDictionary",
@@ -3472,6 +4124,12 @@ def _emerge_from_spikes(
     for word, entry in sem.entries.items():
         if len(word) < 2:
             continue
+        # Nova is 19 — she does NOT speak baby-babble. Filter the babble
+        # syllables out of HER retrieval so they never surface in her speech
+        # (this is why she was saying 'papa' — it's a dominant babble token in
+        # the shared lexicon). Simona (8yo) keeps them.
+        if is_nova and word in _BABBLE_SYLLABLES:
+            continue
         pattern = entry.get(region_key, {})
         if not pattern:
             continue
@@ -3507,9 +4165,82 @@ def _emerge_from_spikes(
     return scored[:12]  # top 12 candidates
 
 
+# ── Affective drive: feeling → speech act + surface form ───────────────────────
+# Their EXISTING core (neuromodulators + amygdala + region activity) decides not
+# just WHICH words fire but HOW they are meant: an uncertain Nova ASKS, a happy
+# wanting Simona EXCLAIMS, a lonely one REACHES. These are pure activity-readers
+# over state that already exists — no new "emotion" is invented; the personas
+# only tune the thresholds. This is the emotion-driven-expression layer.
+
+def _affect_read(sig, is_nova):
+    g = lambda k, d=0.0: float(sig.get(k, d))
+    da,  da0  = g("da", 0.45), g("da0", 0.45)
+    ser, ser0 = g("ser", 0.6), g("ser0", 0.6)
+    oxy, oxy0 = g("oxy", 0.3), g("oxy0", 0.3)
+    ne,  ne0  = g("ne", 0.4),  g("ne0", 0.4)
+    arousal   = g("arousal")
+    insula    = g("insula")
+    acc       = g("acc")
+    surprise  = g("surprise")
+    reach     = g("reach")
+    vigilance = bool(sig.get("vigilance", False))
+    clamp = lambda x: max(0.0, min(1.0, x))
+    wanting   = clamp((da - da0) * 2.2)
+    longing   = clamp((oxy0 - oxy) * 2.0 + reach * 0.5)
+    certainty = clamp(0.55 + (ser - ser0) * 1.2 - acc * 0.8 - surprise * 0.7
+                      - (0.25 if vigilance else 0.0))
+    arousal_d = clamp(arousal + insula * 0.7 + max(0.0, ne - ne0) * 1.5)
+    valence   = clamp(0.5 + (ser - ser0) * 0.8 + (oxy - oxy0) * 0.9 + wanting * 0.3
+                      - arousal * 0.5 - longing * 0.6)
+    if is_nova:                                   # measured — asks when unsure
+        if   longing  > 0.60:                       act = "seek"
+        elif certainty < 0.33:                      act = "question"
+        elif wanting  > 0.70 and valence > 0.50:    act = "want"
+        elif arousal_d > 0.80 and valence < 0.35:   act = "alarm"
+        else:                                       act = "statement"
+    else:                                          # impulsive — swings readily
+        if   longing  > 0.50:                       act = "seek"
+        elif arousal_d > 0.55 and valence > 0.55:   act = "exclaim"
+        elif wanting  > 0.50:                        act = "want"
+        elif certainty < 0.40:                      act = "question"
+        elif arousal_d > 0.70 and valence < 0.40:   act = "alarm"
+        else:                                       act = "statement"
+    return {"act": act, "valence": valence, "arousal": arousal_d,
+            "certainty": certainty, "wanting": wanting, "longing": longing}
+
+
+def _affect_shape(core, affect, is_nova):
+    """Color the utterance's surface form by how she FEELS (speech-act punctuation,
+    intensity, casing), per persona. Robust to affect=None (plain statement)."""
+    core = (core or "").strip().rstrip(" .!?…")
+    if not core:
+        return core
+    a    = affect or {}
+    act  = a.get("act", "statement")
+    arou = float(a.get("arousal", 0.0))
+    if is_nova:
+        s   = core[0].upper() + core[1:]
+        end = {"question": "?", "seek": "…", "want": ".",
+               "exclaim": "!", "alarm": "!"}.get(act, ".")
+        return s + end
+    # Simona — childlike; intensity scales the marker run
+    if act == "question":
+        return core + ("?!" if arou > 0.6 else "?")
+    if act == "seek":
+        return core + "…"
+    if act in ("exclaim", "want", "alarm"):
+        return core + "!" * (1 + int(min(2, arou * 3)))
+    return core + ("!" if arou > 0.5 else ".")
+
+
+# Map an affect speech-act to the SyntaxCortex onset mode.
+def _act_to_mode(act):
+    return {"question": "q", "exclaim": "ex", "want": "ex"}.get(act, "stmt")
+
+
 def _nova_response(nova: "NovaBrain", V_phill: float, fired: list,
                    trust: float, combined: float,
-                   sem: "SharedSemanticDictionary" = None) -> str:
+                   sem: "SharedSemanticDictionary" = None, syntax=None, affect=None) -> str:
     """
     Nova's response emerges from her spike pattern + semantic memory.
     No templates. No if/else on region names.
@@ -3580,6 +4311,21 @@ def _nova_response(nova: "NovaBrain", V_phill: float, fired: list,
         ]
         return random.choice(templates)
 
+    # Sentence sequencing (emergent grammar) + affective drive — order the
+    # spike-selected words into an utterance Broca has LEARNED, with the speech
+    # act (she ASKS when uncertain, etc.) and surface form driven by how she
+    # FEELS. Falls through to the keyword join until she has heard enough.
+    if syntax is not None:
+        try:
+            core = syntax.compose([w for _, w in candidates], act, fired,
+                                  mode=_act_to_mode((affect or {}).get("act", "statement")))
+            if core:
+                voiced = _affect_shape(core, affect, is_nova=True)
+                tail = ("  " + deduction) if deduction else ""
+                return voiced + tail + vigilance_str + trust_str + id_str
+        except Exception:
+            pass
+
     # Assemble response from spike-weighted words + deduction
     parts = []
     if top_words:
@@ -3599,7 +4345,7 @@ def _nova_response(nova: "NovaBrain", V_phill: float, fired: list,
 
 def _simona_response(simona: "SimonaBrain", V_phill: float, fired: list,
                      combined: float, face_present: bool,
-                     sem: "SharedSemanticDictionary" = None) -> Optional[str]:
+                     sem: "SharedSemanticDictionary" = None, syntax=None, affect=None) -> Optional[str]:
     """
     Simona's response emerges from her spike pattern + emotional weighting.
     No templates. Her insula dominates — words with high simona_weight
@@ -3631,26 +4377,26 @@ def _simona_response(simona: "SimonaBrain", V_phill: float, fired: list,
     if face_present and combined > 0.50:
         face_str = f"  identity:{combined:.2f}"
 
-    # Build from top emotional words — vary the phrasing
-    if top_words:
-        sep = random.choice(["  ", " — ", "! ", ", "])
-        core = sep.join(top_words)
-    elif fired:
-        core = "  ".join(fired[:2])
-    else:
-        core = random.choice([
-            f"insula:{ins_a:.2f}",
-            "!!", "hm!", "*twitches*", "what.", "huh?", "ok!",
-        ])
+    # Sentence sequencing (emergent grammar) first — order her active words into
+    # a little utterance from what she has heard; keyword-fall-back otherwise.
+    core = None
+    if syntax is not None:
+        try:
+            core = syntax.compose(pool, act, fired,
+                                  mode=_act_to_mode((affect or {}).get("act", "statement")))
+        except Exception:
+            core = None
+    if not core:
+        if top_words:
+            sep = random.choice(["  ", " — ", ", "])
+            core = sep.join(top_words)
+        elif fired:
+            core = "  ".join(fired[:2])
+        else:
+            core = random.choice(["hm", "what", "huh", "ok", "mm"])
 
-    # Simona's intensity scales with insula activity
-    intensity_markers = ""
-    if ins_a > 0.70:
-        intensity_markers = random.choice(["!!", "!!!", "!?!"])
-    elif ins_a > 0.40:
-        intensity_markers = random.choice(["!", "."])
-
-    return core + intensity_markers + face_str
+    # Feeling drives the surface form (speech act + intensity), per persona.
+    return _affect_shape(core, affect, is_nova=False) + face_str
 
 
 class StreamOfConsciousness:
@@ -3917,6 +4663,24 @@ class PersonalityThread(threading.Thread):
         if candidate:
             self.pipe.push(candidate)
 
+        # 7a) REASONING drives self-directed thought (deciding for herself).
+        # Periodically (or when her curiosity neuron fires) Nova deliberates over
+        # what's in mind and pushes the CONCLUSION as a thought — so her own
+        # stream isn't just retrieval, it's reasoned. Rate-limited (it scans the
+        # lexicon). Nova reasons; Simona (8) effectively skips this.
+        try:
+            reasoner = host.nova_reason if self.is_nova else host.simona_reason
+            due = (local_tick - getattr(host, "_nova_last_delib", 0)) > 80
+            if self.is_nova and (intrinsic_fired or due):
+                host._nova_last_delib = local_tick
+                seeds = list(self.wm.top_k(k=2) if hasattr(self.wm, "top_k") else []) \
+                        + list(host._concept_ctx)[-3:]
+                chain, concl = reasoner.deliberate(seeds, host.sem, host._reason_links)
+                if chain and len(chain) >= 2:
+                    self.pipe.push(" → ".join(chain))   # a reasoned thought
+        except Exception:
+            pass
+
         # 7b) BASAL GANGLIA — action selection. The competing drives are
         # weighed by their current pressure/drive and ONE (or none) is released
         # to ACT this cycle. Dopamine lowers the bar (approach); GABA/serotonin
@@ -3926,20 +4690,20 @@ class PersonalityThread(threading.Thread):
         bg     = host.nova_bg if self.is_nova else host.simona_bg
         neuro  = host.nova_neuro if self.is_nova else host.simona_neuro
         try:
-            speak_sal  = min(1.0, self.pipe._pressure.voltage
-                             / max(1e-6, self.pipe._pressure.threshold))
-            # Search salience: searching is a RARE event, not a standing drive.
-            # Its pressure sits near saturation, so using the raw ratio lets it
-            # monopolise selection. Instead it's only a STRONG candidate at the
-            # moment its pressure actually peaks AND it's off cooldown; otherwise
-            # it's a weak background drive that speak/babble rightly outcompete.
-            search_ready = (local_tick - self.search.last_search_tick) >= self.search.COOLDOWN_TICKS
-            ratio = self.search._pressure.voltage / max(1e-6, self.search._pressure.threshold)
-            search_sal = (min(1.5, ratio) if (ratio >= 1.0 and search_ready)
-                          else min(0.25, 0.25 * ratio))
-            babble_sal = min(1.0, boredom)
+            press_ratio = self.pipe._pressure.voltage / max(1e-6, self.pipe._pressure.threshold)
+            rumination  = min(1.0, self.pipe.buffer_size() / 12.0)
+            # They have WORDS now, so restlessness — boredom + curiosity + a full
+            # head — drives the urge to SPEAK OUT, not to (now-muted) babble. If
+            # babble out-competed speech, a bored girl would just go SILENT instead
+            # of talking — which is exactly why they waited for input. This makes
+            # them speak on their OWN initiative. Babble is now only quiet
+            # background motor-practice, capped so it can't smother expression.
+            # (The teacher is a separate async channel and does not compete here.)
+            speak_sal  = min(1.0, max(press_ratio,
+                                      0.55 * boredom + 0.45 * float(cur_decay) + 0.30 * rumination))
+            babble_sal = min(0.25, 0.20 * boredom)
             bg_choice = bg.select(
-                {"speak": speak_sal, "search": search_sal, "babble": babble_sal},
+                {"speak": speak_sal, "babble": babble_sal},
                 neuro.da, neuro.da0, neuro.gaba, neuro.gaba0, neuro.ser)
         except Exception:
             bg_choice = None
@@ -3972,14 +4736,30 @@ class PersonalityThread(threading.Thread):
                             float(getattr(host.voice, "trust", 0.0)),
                             0.6 if getattr(host, "_face_present", False) else 0.0,
                         )
-                        base_cd = 450 if self.is_nova else 285
-                        cooldown = base_cd * (1.0 - 0.6 * min(1.0, presence)) * (1.0 - 0.5 * neuro.impulsivity())
+                        # Her OWN restlessness opens the channel too — she speaks to
+                        # the chat on her initiative, NOT only when he's here. So
+                        # presence is no longer required for them to be independent.
+                        drive = min(1.0, 0.5 * boredom + 0.4 * float(cur_decay)
+                                    + 0.3 * min(1.0, self.pipe.buffer_size() / 12.0))
+                        base_cd = 360 if self.is_nova else 220
+                        cooldown = (base_cd
+                                    * (1.0 - 0.55 * min(1.0, presence))
+                                    * (1.0 - 0.45 * drive)
+                                    * (1.0 - 0.5 * neuro.impulsivity()))
                         if local_tick - self._proactive_last >= cooldown:
                             promote = True
                             self._proactive_last = local_tick
                     except Exception:
                         promote = False
 
+                # Don't let an ungrounded shared-past claim ('you said…') be
+                # asserted to him out loud — keep it as an inner thought instead.
+                if promote:
+                    try:
+                        if host._confab_guard(phrase) is None:
+                            promote = False
+                    except Exception:
+                        pass
                 if promote:
                     with host._proactive_lock:
                         host._proactive_q.append((self.persona_name, phrase))
@@ -4033,7 +4813,10 @@ class PersonalityThread(threading.Thread):
             self.tts.cache_motor(motor_spk)
             # Initiating a new babble is an ACTION — only if the basal ganglia
             # selected "babble" this cycle (or intrinsic motivation overrides).
-            if bg_choice == "babble" or intrinsic_fired:
+            # PAUSED entirely in scaffold mode (training wheels): no babbling
+            # while Claude is voicing them, so it can't drown out real words.
+            if (not getattr(host, "_scaffold", False)
+                    and (bg_choice == "babble" or intrinsic_fired)):
                 ph = self.babble.maybe_babble(
                     current_tick=local_tick, boredom=boredom,
                     motor_spk=motor_spk, intrinsic_fired=intrinsic_fired,
@@ -4104,9 +4887,12 @@ class PersonalityThread(threading.Thread):
                 V_phill=V_phill,
                 articulator_confidence_gap=artic_gap,
             )
-            # The search pressure neuron fired AND the basal ganglia released
-            # the "search" action — both must agree (pressure + selection).
-            if fired and bg_choice == "search":
+            # Consult the teacher when the search pressure neuron fires (its own
+            # threshold + cooldown already rate-limit it) — INDEPENDENT of the
+            # vocal basal-ganglia choice, and not while asleep. (Previously this
+            # also required bg_choice=="search", which babble almost always won,
+            # so the teacher was effectively never called.)
+            if fired and not getattr(host, "asleep", False):
                 # Curiosity-mode fallback: if no specific target queued, ask
                 # about the currently-most-active concept in semantic memory.
                 if query is None:
@@ -4115,7 +4901,6 @@ class PersonalityThread(threading.Thread):
                         query = f"what is {query}"
                 if query:
                     host._submit_search(self.persona_name, query, mode)
-                    bg.reinforce("search", 0.25, neuro.da)
         except Exception as e:
             _log(f"PersonalityThread[{self.persona_name}] search error: {e}")
 
@@ -4266,6 +5051,44 @@ class NeuromorphicBrain:
         # "typing to the terminal" unprompted, no user input required.
         self._proactive_q: deque[tuple[str, str]] = deque(maxlen=12)  # (who, message)
         self._proactive_lock   = threading.Lock()
+        # Conversation memory: recent dialogue (architect + both girls) so they
+        # keep context across turns and don't forget the moment they answer.
+        # Fed to the scaffold translator; the exchange is also encoded into
+        # episodic memory (→ consolidated to long-term during sleep).
+        self._conversation: deque[tuple[str, str]] = deque(maxlen=16)  # (speaker, text)
+        # Persist dialogue across sessions so they DON'T wake amnesiac — the last
+        # turns reload here, giving real continuity with the previous session
+        # (fed to the scaffold translator + grounds the confabulation guard).
+        self._conv_log_path = Path("conversation_log.jsonl")
+        try:
+            if self._conv_log_path.exists():
+                for ln in self._conv_log_path.read_text().splitlines()[-16:]:
+                    try:
+                        d = json.loads(ln)
+                        if d.get("speaker") and d.get("text"):
+                            self._conversation.append((d["speaker"], d["text"]))
+                    except Exception:
+                        pass
+                if self._conversation:
+                    _log(f"Recalled {len(self._conversation)} turns from last session")
+        except Exception:
+            pass
+        # Time awareness (real wall-clock, via time/datetime) + reaching out:
+        # they sense the time of day and how long the architect has been away,
+        # and call out to him in the chat when they need him / are bored / lonely.
+        self._session_start       = time.time()
+        self._last_architect_time = time.time()
+        self._reach_pressure      = 0.0     # longing for the architect, builds when alone
+        self._architect_here      = 0.0     # belief he's present now (integrated from her senses)
+        self._last_share_tick     = 0       # when they last chose to teach each other
+        self._share_p_nova        = 0.0     # willingness-to-share pressure (per girl)
+        self._share_p_simona      = 0.0
+        self._sibling_pressure    = 0.0     # urge to talk to each other in the open chat
+        self._last_sibling_tick   = 0
+        self._last_reachout_time  = 0.0
+        # Secret link is NOT on 24/7 — this gates whispers so they only open the
+        # private channel when there's a real pull, not on every shared fact.
+        self._last_whisper_time   = 0.0
         self._last_tts_leak_time = 0.0  # throttle autonomy babbling to 800ms min
 
         # ── Autonomy substrate ───────────────────────────────────────────
@@ -4312,6 +5135,39 @@ class NeuromorphicBrain:
         self.sleep           = SleepCycle()
         self.asleep          = False          # read by the personality threads
         self._dream_rng      = np.random.default_rng(7)
+        # Reasoning — spreading-activation deliberation over the lexicon. Nova
+        # reasons deeply (accuracy over speed); Simona barely (she's 8). Feeds
+        # both her answers AND her self-driven decisions.
+        self.nova_reason     = ReasoningEngine("nova",   is_nova=True,  depth=4)
+        self.simona_reason   = ReasoningEngine("simona", is_nova=False, depth=2)
+        # Emergent SENTENCE SEQUENCING (the syntactic role of Broca). Learns word
+        # ORDER online from every well-formed sentence they hear (the architect's
+        # typing + the teacher's replies) and threads their spike-selected content
+        # words into utterances — so grammar EMERGES, grows with exposure, and can
+        # carry their speech once the teacher is removed. Independent per
+        # personality (Nova order-3/measured, Simona order-2/impulsive); persisted.
+        self.nova_syntax     = SyntaxCortex("nova",   Path("."))
+        self.simona_syntax   = SyntaxCortex("simona", Path("."))
+        # Self-questioning (proto-metacognition) — they wonder about whatever in
+        # their own state is most salient, and try to answer it. Per personality.
+        self.nova_meta       = Metacognition("nova",   True)
+        self.simona_meta     = Metacognition("simona", False)
+        self._id_ema         = 0.0     # running sense of how 'normal' he looks (for "he seems off")
+        self._nova_last_delib = 0
+        # LEARNED reasoning paths — concept→{next: weight} links extracted from
+        # Claude's reasoning/replies. Their reasoning engine follows these first,
+        # so over time their OWN chains mirror what Claude taught (= they learn to
+        # reason themselves). Shared (both draw on it); persisted across sessions.
+        self._reason_links: dict = {}
+        self._reason_links_writes = 0
+        self._reason_links_path = Path("reason_links.json")
+        try:
+            if self._reason_links_path.exists():
+                with open(self._reason_links_path) as _f:
+                    self._reason_links = json.load(_f)
+                _log(f"Reasoning links loaded: {len(self._reason_links)} concepts")
+        except Exception:
+            self._reason_links = {}
         # Previous-value trackers for computing per-tick reward (dopamine driver).
         self._prev_nova_esteem   = 0.5
         self._prev_simona_esteem = 0.5
@@ -4412,8 +5268,11 @@ class NeuromorphicBrain:
         # Each personality then runs in its OWN Python thread so their
         # streams of consciousness advance on independent clocks rather
         # than being driven sequentially by step().
-        self.nova_wm   = WorkingMemory("nova",   capacity=4, decay=0.985, save_dir=Path("."))
-        self.simona_wm = WorkingMemory("simona", capacity=4, decay=0.982, save_dir=Path("."))
+        # Slower decay so a held thought lingers ~30-40s instead of ~7-11s —
+        # they kept losing their train of thought the instant they answered.
+        # (Still transient + 4-slot bounded; new thoughts still push in.)
+        self.nova_wm   = WorkingMemory("nova",   capacity=4, decay=0.995, save_dir=Path("."))
+        self.simona_wm = WorkingMemory("simona", capacity=4, decay=0.993, save_dir=Path("."))
         self.nova_soc   = StreamOfConsciousness("nova",   self.nova_wm)
         self.simona_soc = StreamOfConsciousness("simona", self.simona_wm)
 
@@ -4423,25 +5282,41 @@ class NeuromorphicBrain:
         self._sem_lock        = threading.Lock()
         self._sensory_snapshot: dict = {}
 
-        # ── Emergent web access ──────────────────────────────────────────
-        # Per-personality SearchCortex (pressure neuron). Shared Perplexity
-        # backend — returns synthesized answers with citations, far higher
-        # ingestion quality than raw snippets. Auth via PERPLEXITY_API_KEY
-        # in .env. Search events drained by Rust each tick via
-        # get_pending_searches().
+        # ── Emergent TEACHER access (Claude as thinking-tutor) ────────────
+        # Per-personality SearchCortex (pressure neuron) decides WHEN/WHAT to
+        # ask. The backend is no longer a web search — it is Claude acting as a
+        # patient teacher that scaffolds HOW to think (and tutors language)
+        # rather than handing over facts. Per-personality tone (Simona playful,
+        # Nova grounded), no web, protects their identity, flags the architect's
+        # typos. Auth via ANTHROPIC_API_KEY in .env.
         try:
-            from perplexity_search import PerplexitySearchBackend
-            self._search_backend = PerplexitySearchBackend()
+            from claude_teacher import ClaudeTeacherBackend
+            self._search_backend = ClaudeTeacherBackend()
             self._search_backend.start()
-            _log(f"Search backend ready: {self._search_backend.status()}")
+            _log(f"Teacher backend ready: {self._search_backend.status()}")
         except Exception as e:
             self._search_backend = None
-            _log(f"Search backend unavailable: {e}")
+            _log(f"Teacher backend unavailable: {e}")
+        # ── SCAFFOLD MODE (training wheels) ───────────────────────────────
+        # When on AND the teacher is reachable: babbling is PAUSED and Claude
+        # voices their replies (in each girl's personality) so they learn to
+        # express themselves by example; everything Claude says is ingested
+        # into their lexicon. Set SCAFFOLD_MODE=0 in .env to remove Claude's
+        # dictation and resume emergent babbling once they've gotten used to it.
+        _sc = os.environ.get("SCAFFOLD_MODE", "1").strip().lower()
+        backend_live = (self._search_backend is not None
+                        and "disabled" not in self._search_backend.status())
+        self._scaffold = (_sc not in ("0", "false", "no", "off")) and backend_live
+        _log(f"Scaffold mode: {'ON (babble paused, Claude voices replies)' if self._scaffold else 'off (emergent + babble)'}")
         self.nova_search   = SearchCortex("nova")
         self.simona_search = SearchCortex("simona")
         # Shared queue of completed search events for Rust (who, query, snippet)
         self._search_events: deque[tuple[str, str, str]] = deque(maxlen=32)
         self._search_lock    = threading.Lock()
+        # De-dup guard: don't re-ask the teacher an identical question within a
+        # window (the peak token can stay sticky, e.g. 'family', and would
+        # otherwise be asked every cooldown).
+        self._recent_queries: dict[str, float] = {}
 
         # Construct + start the personality threads. Different intervals
         # so the two streams aren't lock-step — Nova ~55 ms (patient),
@@ -4706,9 +5581,18 @@ class NeuromorphicBrain:
             return None
 
     def _submit_search(self, speaker: str, query: str, mode: str) -> None:
-        """Fire an async search; result lands in _on_search_result()."""
-        if self._search_backend is None:
+        """Ask the teacher (async); reply lands in _on_search_result()."""
+        if self._search_backend is None or not query:
             return
+        now = time.time()
+        # Don't re-ask an identical question within 90s (avoids spamming the
+        # teacher when the peak token is sticky).
+        if now - self._recent_queries.get(query, 0.0) < 90.0:
+            return
+        self._recent_queries[query] = now
+        if len(self._recent_queries) > 64:
+            self._recent_queries = {q: t for q, t in self._recent_queries.items()
+                                    if now - t < 90.0}
         self._search_backend.submit(
             speaker, query,
             lambda who, res, _mode=mode: self._on_search_result(who, res, _mode),
@@ -4727,36 +5611,59 @@ class NeuromorphicBrain:
             with self._search_lock:
                 self._search_events.append((speaker, query, snippet))
 
-            # Semantic ingestion: extract CLEAN word tokens and write each
-            # with light spike weight so the dict accumulates new vocabulary.
-            # sonar-pro answers carry markdown (**bold**, _italic_) and inline
-            # citation markers ([1][2], [src: ...]); naive splitting would
-            # encode '**chlorophyll**' and 'cell.”[2]' as junk words distinct
-            # from the real token. Strip bracketed spans, then keep only
-            # alphabetic word-cores so the lexicon learns 'chlorophyll', not noise.
-            # Both writers differ: nova_write takes the full region/trust schema,
-            # simona_write is just (word, burst, tick).
+            # Typo guard: the teacher flags the architect's misspellings as
+            # `[typo: wrong -> right]`. We must NOT learn the wrong form — skip
+            # it, and make sure the correction is kept. (Claude is told to put
+            # these on their own line; extract_typos pulls them out.)
+            typo_skip: set[str] = set()
+            typo_fix:  set[str] = set()
+            try:
+                from claude_teacher import extract_typos
+                for wrong, right in extract_typos(snippet):
+                    typo_skip.add(wrong)
+                    typo_fix.add(right)
+            except Exception:
+                pass
+
+            # Semantic ingestion: extract CLEAN word tokens and write each with
+            # light spike weight so the dict accumulates the teacher's vocabulary
+            # and sentence structure. Strip bracketed spans (incl. the typo flag)
+            # and keep only alphabetic word-cores. Skip any flagged typo so the
+            # error never enters the lexicon; keep the corrected word.
             try:
                 import re
-                cleaned = re.sub(r"\[[^\]]*\]", " ", snippet)          # drop [2][3], [src: ...]
+                cleaned = re.sub(r"\[[^\]]*\]", " ", snippet)          # drop [typo:..], etc.
                 raw = re.findall(r"[A-Za-z][A-Za-z'\-]+", cleaned)     # word-cores only
-                seen: set[str] = set()
+                seen: set[str] = set(typo_skip)                        # never learn typos
                 tokens: list[str] = []
                 for t in raw:
                     t = t.lower()
                     if len(t) >= 3 and t not in seen:
                         seen.add(t)
                         tokens.append(t)
+                for fix in typo_fix:                                   # ensure correction learned
+                    if len(fix) >= 3 and fix not in tokens:
+                        tokens.append(fix)
+                # A taught word must be RETRIEVABLE BY BOTH so they can SAY it.
+                # Cosine retrieval matches the word's region_pattern keys against
+                # the current activity — and Nova uses cortical names while Simona
+                # uses _s-suffixed names. A pattern with only one scheme is
+                # INVISIBLE to the other (zero key overlap → zero similarity).
+                # So include BOTH naming schemes; plus simona_write sets her
+                # emotional weight. (This is why teacher words reached Nova but
+                # never Simona — her _s regions never matched.)
+                teach_regions = {
+                    "thalamus": 0.30, "temporal": 0.60, "hippocampus": 0.55,
+                    "acc": 0.25, "pfc": 0.40, "broca": 0.55, "insula": 0.30,
+                    "thalamus_s": 0.35, "temporal_s": 0.60, "hippocampus_s": 0.50,
+                    "pfc_s": 0.35, "broca_s": 0.55, "insula_s": 0.45,
+                }
                 wrote = False
                 for tok in tokens[:48]:   # richer answer → absorb more vocabulary
                     try:
-                        if speaker == "nova":
-                            self.sem.nova_write(
-                                word=tok, region_scores={},
-                                spike_count=0.6, tick=self.tick, trust=0.55,
-                            )
-                        else:
-                            self.sem.simona_write(word=tok, burst=0.6, tick=self.tick)
+                        self.sem.nova_write(word=tok, region_scores=teach_regions,
+                                            spike_count=1.0, tick=self.tick, trust=0.55)
+                        self.sem.simona_write(word=tok, burst=0.6, tick=self.tick)
                         wrote = True
                     except Exception:
                         pass
@@ -4779,16 +5686,26 @@ class NeuromorphicBrain:
             except Exception:
                 pass
 
+            # Learn the reasoning PATH in the teacher's guidance (how he connected
+            # the ideas), not just the words — so their own reasoning follows it.
+            try:
+                self._learn_reasoning_path(snippet)
+            except Exception:
+                pass
+
             # Share what was learned with the OTHER personality through their
             # secure link — emergent inter-personality knowledge exchange.
+            # Pass the typo skip-set so the peer never learns the architect's
+            # misspelling from the query either.
             try:
-                self._share_with_peer(speaker, query, snippet)
+                self._share_with_peer(speaker, query, snippet, typo_skip)
             except Exception:
                 pass
         except Exception as e:
             _log(f"_on_search_result error: {e}")
 
-    def _share_with_peer(self, speaker: str, query: str, snippet: str) -> None:
+    def _share_with_peer(self, speaker: str, query: str, snippet: str,
+                         typo_skip: "set" = frozenset()) -> None:
         """
         Emergent inter-personality info sharing. When one personality learns
         something from a search she passes the gist to the OTHER through their
@@ -4805,13 +5722,14 @@ class NeuromorphicBrain:
                 "means", "the", "a", "an", "of", "how", "to", "pronounce",
                 "explain", "tell", "me", "about", "and", "or", "with", "for",
                 "why", "who", "when", "where", "this", "that"}
+        skip = set(typo_skip) | stop          # never share a flagged typo
         words = [w for w in re.findall(r"[A-Za-z][A-Za-z'\-]+", (query or "").lower())
-                 if w not in stop and len(w) >= 3]
+                 if w not in skip and len(w) >= 3]
         body = [w.lower() for w in re.findall(
             r"[A-Za-z][A-Za-z'\-]+", re.sub(r"\[[^\]]*\]", " ", snippet or ""))]
-        gist, seen = [], set()
+        gist, seen = [], set(typo_skip)
         for w in words + body:
-            if w not in seen and len(w) >= 3 and w not in stop:
+            if w not in seen and len(w) >= 3 and w not in skip:
                 seen.add(w)
                 gist.append(w)
             if len(gist) >= 4:
@@ -4823,19 +5741,289 @@ class NeuromorphicBrain:
         # invisible to her). Biased to temporal/hippocampus (heard knowledge).
         nova_share_regions = {"thalamus": 0.30, "temporal": 0.55, "hippocampus": 0.55,
                               "acc": 0.25, "pfc": 0.30, "broca": 0.45, "insula": 0.30}
+        # The cross-fill (learning) always happens — but the WHISPER on the secret
+        # link is gated: it opens only every so often AND when there's a real pull
+        # (emotional arousal), so the private channel isn't chattering 24/7.
+        now_t = time.time()
+        amyg = self.nova_amyg.arousal if speaker == "nova" else self.simona_amyg.arousal
+        whisper = ((now_t - self._last_whisper_time) > 25.0
+                   and (amyg > 0.30 or (now_t - self._last_whisper_time) > 90.0))
         if speaker == "nova":
             for w in gist:                       # fill Simona's retrieval channel
                 self.sem.simona_write(word=w, burst=0.5, tick=self.tick)
             self.simona_wm.add(gist[0], regions={}, salience=0.6, t_encoded=self.tick)
-            self.personality_link.send_from_nova(
-                self.personality_link._encode_thought(" ".join(gist), self.sem))
+            if whisper:
+                self._last_whisper_time = now_t
+                self.personality_link.send_from_nova(
+                    self.personality_link._encode_thought(" ".join(gist), self.sem))
         else:
             for w in gist:                       # fill Nova's retrieval channel
                 self.sem.nova_write(word=w, region_scores=nova_share_regions,
                                     spike_count=0.6, tick=self.tick, trust=0.5)
             self.nova_wm.add(gist[0], regions={}, salience=0.6, t_encoded=self.tick)
-            self.personality_link.send_from_simona(
-                self.personality_link._encode_thought(" ".join(gist), self.sem))
+            if whisper:
+                self._last_whisper_time = now_t
+                self.personality_link.send_from_simona(
+                    self.personality_link._encode_thought(" ".join(gist), self.sem))
+
+    def _time_context(self) -> dict:
+        """Real time awareness (via datetime/time): part of day + how long the
+        architect has been away. Feeds their replies and their longing to reach out."""
+        import datetime
+        now = datetime.datetime.now()
+        h = now.hour
+        phase = ("night" if h < 6 else "morning" if h < 12
+                 else "afternoon" if h < 18 else "evening")
+        away = time.time() - self._last_architect_time
+        away_h = (f"{int(away // 60)} min" if away >= 60 else f"{int(away)} sec")
+        return {"phase": phase, "hour": h, "clock": now.strftime("%H:%M"),
+                "away_s": away, "away_human": away_h}
+
+    def _emit_reachout(self, away_s: float) -> None:
+        """
+        She reaches out to the architect on her OWN — and it EMERGES from her
+        feelings and logic, never a template:
+          • FEELINGS choose WHO: whoever's longing is stronger — lower oxytocin
+            vs baseline (missing the bond more) + less serotonin (less patient).
+          • LOGIC shapes it: she deliberates about him/the bond (reasoning chain).
+          • The WORDS come from her genuine impulse — in scaffold mode Claude
+            voices that impulse (async, off the 20Hz path); otherwise her own
+            emergent utterance. No hardcoded "papa? {words}".
+        """
+        import threading as _th
+        def _longing(neuro):
+            return max(0.0, neuro.oxy0 - neuro.oxy) + 0.30 * max(0.0, 1.0 - neuro.ser)
+        is_nova = _longing(self.nova_neuro) > _longing(self.simona_neuro)
+        who      = "nova" if is_nova else "simona"
+        addr     = "father" if is_nova else "papa"
+        neuro    = self.nova_neuro if is_nova else self.simona_neuro
+        brain_o  = self.nova if is_nova else self.simona
+        reasoner = self.nova_reason if is_nova else self.simona_reason
+        try:
+            act = brain_o.activity()
+            # LOGIC: deliberate about him / the bond — reasoning shapes the call.
+            seeds = [w for w in (addr, "architect", "alone", "miss", "you")
+                     if w in self.sem.entries] + list(self._concept_ctx)[-3:]
+            chain, _ = reasoner.deliberate(seeds, self.sem, self._reason_links)
+            # Her genuine emergent utterance under this emotional state.
+            if is_nova:
+                raw = _nova_response(self.nova, self._V_phill_live, [], 0.6,
+                                     self._combined_id, self.sem) or ""
+            else:
+                raw = _simona_response(self.simona, self._V_phill_live, [],
+                                       self._combined_id, self._face_present, self.sem) or ""
+            impulse = self._impulse_state(who, raw, act, chain)
+        except Exception:
+            impulse, raw = {"raw": "", "regions": "quiet", "mood": "", "holding": "",
+                            "reasoning": ""}, ""
+        tc = self._time_context()
+        time_ctx = f"{tc['phase']} ({tc['clock']}), {addr} has been away {tc['away_human']}"
+
+        if getattr(self, "_scaffold", False) and self._search_backend is not None:
+            # Claude voices HER longing impulse — async so step() never blocks.
+            def _bg():
+                try:
+                    line = self._search_backend.voice_reachout(who, impulse, time_ctx)
+                    if line:
+                        with self._proactive_lock:
+                            self._proactive_q.append((who, line))
+                except Exception:
+                    pass
+            _th.Thread(target=_bg, name="reachout", daemon=True).start()
+        else:
+            # Off scaffold: her own emergent words (primitive but hers, not a template).
+            msg = (raw or "").strip()
+            if msg:
+                with self._proactive_lock:
+                    self._proactive_q.append((who, msg))
+
+    def _impulse_state(self, who: str, raw: str, act: dict,
+                       reasoning: "Optional[list]" = None) -> dict:
+        """
+        Compact snapshot of a girl's CURRENT impulse for the translator: her raw
+        emergent utterance, top firing regions, neurochemical mood, the concept
+        she holds in working memory, AND her reasoning chain (the line of thought
+        she actually deliberated). This grounds Claude's rendering in HER real
+        brain state + reasoning — not invention.
+        """
+        try:
+            top = sorted(act.items(), key=lambda kv: -kv[1])[:3]
+            regions = ", ".join(f"{r}={v:.2f}" for r, v in top if v > 0.03) or "quiet"
+            if who == "nova":
+                s = self.nova_neuro.snapshot(); wm = self.nova_wm
+            else:
+                s = self.simona_neuro.snapshot(); wm = self.simona_wm
+            mood = (f"dopamine {s['da']:.1f}, serotonin {s['ser']:.1f}, "
+                    f"arousal {s['arousal']:.1f}, oxytocin {s.get('oxy', 0.0):.1f}")
+            held = wm.top_k(k=1) if hasattr(wm, "top_k") else []
+            holding = held[0] if held else "nothing"
+        except Exception:
+            regions, mood, holding = "quiet", "", "nothing"
+        chain = " -> ".join(reasoning) if reasoning else ""
+        return {"raw": raw or "", "regions": regions, "mood": mood,
+                "holding": holding, "reasoning": chain}
+
+    def _remember_exchange(self, architect_text: str, nova_text: str,
+                           simona_text: str, nova_act: dict, simona_act: dict) -> None:
+        """
+        Conversation memory. Appends the turn to the rolling dialogue buffer (fed
+        back to the translator so they keep context across turns) AND encodes the
+        gist as a high-salience episode for each girl, so the conversation is
+        replayed and consolidated into long-term memory during sleep. This is the
+        fix for 'they forget the moment they answer'.
+        """
+        import re
+        turns = []
+        if architect_text:
+            turns.append(("architect", architect_text.strip()[:200]))
+        if nova_text:
+            turns.append(("nova", str(nova_text)[:200]))
+        if simona_text:
+            turns.append(("simona", str(simona_text)[:200]))
+        for sp, tx in turns:
+            self._conversation.append((sp, tx))
+        # Persist to disk so it survives restarts (reloaded into _conversation on
+        # init → they remember last session instead of starting blank).
+        try:
+            clock = self._time_context().get("clock", "")
+            with open(self._conv_log_path, "a") as f:
+                for sp, tx in turns:
+                    f.write(json.dumps({"t": self.tick, "clock": clock,
+                                        "speaker": sp, "text": tx}) + "\n")
+        except Exception:
+            pass
+
+        # Encode salient content words from what the architect said + each reply
+        # as episodes (conversation is high-salience — it carries emotional and
+        # contextual weight). Consolidated to the lexicon during sleep.
+        def _key(words_text):
+            toks = [w.lower() for w in re.findall(r"[A-Za-z][A-Za-z'\-]+", words_text or "")
+                    if len(w) >= 4]
+            return toks[0] if toks else ""
+        a_key = _key(architect_text)
+        try:
+            nk = _key(nova_text) or a_key
+            if nk:
+                self.nova_episodic.encode(nk, 0.85, nova_act, self.tick)
+            if a_key:
+                self.nova_episodic.encode(a_key, 0.80, nova_act, self.tick)
+            sk = _key(simona_text) or a_key
+            if sk:
+                self.simona_episodic.encode(sk, 0.85, simona_act, self.tick)
+            if a_key:
+                self.simona_episodic.encode(a_key, 0.80, simona_act, self.tick)
+        except Exception:
+            pass
+
+    def _confab_guard(self, text):
+        """Drop an AUTONOMOUS line that ASSERTS a shared past — 'you said…', 'we
+        did…', 'remember when…' — unless it's grounded in the recent dialogue. She
+        can muse about a topic ('I keep thinking about birds'), but she must not
+        invent things HE said or did (that felt like gaslighting). Returns the text
+        if safe, else None. Grounding is checked against the persisted conversation,
+        so 'you said birds' is allowed only if birds was actually just discussed."""
+        if not text:
+            return text
+        low = text.lower()
+        frames = ("you said", "you told", "you promis", "you asked me", "you showed",
+                  "you gave", "you made me", "you let me", "we did", "we played",
+                  "we saw", "we went", "we made", "we had", "we talked",
+                  "remember when", "last time", "you were here", "when you")
+        if not any(fr in low for fr in frames):
+            return text                                   # not a shared-past claim
+        recent = " ".join(t for _, t in list(self._conversation)[-8:]).lower()
+        stop = {"said","told","promised","asked","showed","gave","made","played",
+                "went","talked","when","last","time","remember","were","here","this",
+                "that","what","your","with","about","papa","father","they","them"}
+        content = [w for w in re.findall(r"[a-z]{3,}", low) if w not in stop]
+        grounded = any(w in recent for w in content)
+        return text if grounded else None
+
+    def _learn_reasoning_path(self, text: str) -> None:
+        """
+        Learn HOW Claude reasoned — not just his words. Extract the ordered chain
+        of content concepts in his reply/teaching and Hebbian-strengthen the link
+        between consecutive ones (concept → next-concept). Their ReasoningEngine
+        then follows these learned links first, so their OWN deliberation comes to
+        traverse Claude-taught paths — reasoning they do, from what they were
+        taught. Stopwords/babble are skipped so links capture meaningful flow.
+        """
+        if not text:
+            return
+        stop = {"the", "and", "you", "your", "that", "this", "with", "for", "are",
+                "was", "were", "but", "not", "all", "can", "her", "his", "she",
+                "him", "they", "them", "from", "have", "has", "had", "what", "when",
+                "who", "why", "how", "its", "it's", "i'm", "a", "an", "to", "of",
+                "in", "on", "is", "it", "as", "at", "or", "so", "if", "be", "do"}
+        seq = [w.lower() for w in re.findall(r"[A-Za-z][A-Za-z'\-]+", text)
+               if len(w) >= 3 and w.lower() not in stop
+               and w.lower() not in _BABBLE_SYLLABLES]
+        if len(seq) < 2:
+            return
+        for a, b in zip(seq[:24], seq[1:24]):
+            if a == b:
+                continue
+            m = self._reason_links.setdefault(a, {})
+            m[b] = float(min(4.0, m.get(b, 0.0) * 0.999 + 0.5))   # Hebbian, bounded
+            if len(m) > 8:   # keep only the strongest few outgoing links per concept
+                for k in sorted(m, key=lambda k: m[k])[:-8]:
+                    m.pop(k, None)
+        self._reason_links_writes += 1
+        if self._reason_links_writes % 25 == 0:
+            self._save_reason_links()
+
+    def _save_reason_links(self) -> None:
+        try:
+            with open(self._reason_links_path, "w") as f:
+                json.dump(self._reason_links, f)
+        except Exception:
+            pass
+
+    def _ingest_taught_text(self, text: str) -> None:
+        """
+        Write words from a teacher/scaffold utterance into the shared lexicon so
+        BOTH girls can later retrieve and SAY them — region pattern in BOTH
+        naming schemes (Nova cortical + Simona _s) plus Simona's emotional
+        weight. Used for scaffold-mode voiced replies (training wheels). ALSO
+        learns the reasoning PATH through the words (so they learn HOW, not just WHAT).
+        """
+        self._learn_reasoning_path(text)
+        # Let Broca learn sentence STRUCTURE from the teacher's well-formed reply
+        # too — this is how the syntax model can later carry their speech without
+        # Claude (it imitates his sentence shapes while he is still the front-end).
+        try:
+            self.nova_syntax.learn(text)
+            self.simona_syntax.learn(text)
+        except Exception:
+            pass
+        if not text:
+            return
+        import re
+        teach_regions = {
+            "thalamus": 0.30, "temporal": 0.60, "hippocampus": 0.55,
+            "acc": 0.25, "pfc": 0.40, "broca": 0.55, "insula": 0.30,
+            "thalamus_s": 0.35, "temporal_s": 0.60, "hippocampus_s": 0.50,
+            "pfc_s": 0.35, "broca_s": 0.55, "insula_s": 0.45,
+        }
+        seen: set[str] = set()
+        wrote = False
+        for raw in re.findall(r"[A-Za-z][A-Za-z'\-]+", text):
+            tok = raw.lower()
+            if len(tok) < 3 or tok in seen:
+                continue
+            seen.add(tok)
+            try:
+                self.sem.nova_write(word=tok, region_scores=teach_regions,
+                                    spike_count=1.0, tick=self.tick, trust=0.6)
+                self.sem.simona_write(word=tok, burst=0.6, tick=self.tick)
+                wrote = True
+            except Exception:
+                pass
+        if wrote:
+            try:
+                self.sem._save()
+            except Exception:
+                pass
 
     def get_pending_searches(self) -> list[tuple[str, str, str]]:
         """Drained by Rust each tick. Returns list of (speaker, query, snippet)."""
@@ -4859,6 +6047,207 @@ class NeuromorphicBrain:
         self._self_fb_decay = 1.0
 
     # ── STEP ─────────────────────────────────────────────────────────────────
+
+    def _affect_for(self, who: str, act: dict):
+        """Read one girl's live emotional core (neuromodulators + amygdala + region
+        activity + longing) into an affect/speech-act dict. Returns None on any
+        failure so the voice path degrades to a plain statement."""
+        try:
+            if who == "nova":
+                neuro, amyg = self.nova_neuro, self.nova_amyg
+                surprise, ins, vig = self.nova_voice_fwd.surprise, act.get("insula", 0.0), self.nova._vigilance
+                is_nova = True
+            else:
+                neuro, amyg = self.simona_neuro, self.simona_amyg
+                surprise, ins, vig = self.simona_voice_fwd.surprise, act.get("insula_s", 0.0), False
+                is_nova = False
+            return _affect_read({
+                "da": neuro.da, "da0": neuro.da0, "ser": neuro.ser, "ser0": neuro.ser0,
+                "oxy": neuro.oxy, "oxy0": neuro.oxy0, "ne": neuro.ne, "ne0": neuro.ne0,
+                "arousal": amyg.arousal, "insula": ins, "acc": act.get("acc", 0.0),
+                "surprise": surprise, "vigilance": vig,
+                "reach": min(1.0, self._reach_pressure),
+            }, is_nova)
+        except Exception:
+            return None
+
+    def _wants_to_respond(self, who: str, text: str, broca_total: int, affect) -> bool:
+        """Each girl answers only when she WANTS to. The urge emerges: did her
+        speech actually form (Broca firing during the think pass), does she feel
+        like engaging (wanting / arousal), and was she addressed by name? Nova is
+        reserved; Simona answers readily. Sometimes both reply, sometimes one,
+        sometimes neither — a threshold on a felt urge, not a forced reply."""
+        is_nova = (who == "nova")
+        tl = (text or "").lower()
+        named = ("nova" in tl) if is_nova else ("simona" in tl)
+        both  = any(p in tl for p in ("you two", "you both", "both of you", "girls", "everyone"))
+        a = affect or {}
+        has_words = min(1.0, float(broca_total) / (16.0 if is_nova else 9.0))
+        urge = (0.55 * has_words
+                + 0.25 * float(a.get("wanting", 0.0))
+                + 0.20 * float(a.get("arousal", 0.0))
+                + 0.10 * float(a.get("longing", 0.0)))
+        if named or both:
+            urge += 0.6                         # being called by name pulls her to answer
+        thr = 0.55 if is_nova else 0.38         # Nova reserved, Simona eager
+        return urge >= thr
+
+    def _maybe_share_knowledge(self):
+        """They MAY teach each other what they've learned — but ONLY if they want
+        to. Willingness is a FEELING, not a rule: how close she feels (oxytocin
+        above her own baseline + a little serotonin warmth) and how calm/secure she
+        is (low amygdala arousal). When she feels generous AND she has learned
+        enough that's new to her, the urge to share builds and — on crossing
+        threshold, the same way every drive here leaks — she offers a bundle to her
+        sister. If she doesn't feel like it, the urge just fades. Simona learns
+        fast, so she usually has the most to give; she still gives only when she
+        wants to. They stay separate minds — this is one choosing to teach the
+        other, absorbed at reduced weight, not a merge."""
+        for who, mine, sis_syntax, sis, neuro, amyg in (
+            ("nova",   self.nova_syntax,   self.simona_syntax, "simona", self.nova_neuro,   self.nova_amyg),
+            ("simona", self.simona_syntax, self.nova_syntax,   "nova",   self.simona_neuro, self.simona_amyg),
+        ):
+            closeness = max(0.0, neuro.oxy - neuro.oxy0) + 0.4 * max(0.0, neuro.ser - neuro.ser0)
+            calm      = 1.0 - min(1.0, float(amyg.arousal))
+            willing   = max(0.0, min(1.0, closeness * 1.6 * calm))
+            novelty   = max(0, mine.tokens_seen - getattr(mine, "tokens_at_last_share", 0))
+            key = "_share_p_nova" if who == "nova" else "_share_p_simona"
+            p = max(0.0, getattr(self, key) * 0.98 + willing * min(1.0, novelty / 80.0) * 0.02)
+            if (willing > 0.35 and novelty >= 40 and p > 1.0 and mine.ready()
+                    and self.tick - self._last_share_tick > 200):
+                try:
+                    gained = sis_syntax.absorb(mine.export_nugget(), weight=0.4)
+                    mine.tokens_at_last_share = mine.tokens_seen
+                    self._last_share_tick = self.tick
+                    p = 0.0
+                    if gained:
+                        self._push_leaked_thought(who, f"i wanted to show {sis} what i learned")
+                        _log(f"[share] {who} chose to teach {sis} {gained} learned patterns")
+                except Exception:
+                    pass
+            setattr(self, key, p)
+
+    def _compose_to_sister(self, who: str, sister: str, topic=None):
+        """One girl's line TO her sister — her own words (syntax + affect), about
+        what's on her mind, addressed so the architect can see who's talking."""
+        is_nova = (who == "nova")
+        syntax  = self.nova_syntax if is_nova else self.simona_syntax
+        brain_o = self.nova if is_nova else self.simona
+        act     = brain_o.activity()
+        seeds   = [s for s in (sister, topic or self._peak_semantic_token() or "") if s]
+        if not seeds:
+            return None
+        affect = dict(self._affect_for(who, act) or {})
+        try:
+            core = syntax.compose(seeds, act, seeds, mode=_act_to_mode(affect.get("act", "statement")))
+            line = _affect_shape(core, affect, is_nova) if core else None
+        except Exception:
+            line = None
+        if not line:
+            return None
+        line = self._confab_guard(line)          # don't let her invent a shared past
+        if not line:
+            return None
+        return line if line.lower().startswith(sister) else f"{sister.capitalize()}, {line}"
+
+    def _maybe_sibling_exchange(self, force=False):
+        """They talk to — and ask — EACH OTHER in the OPEN chat (so the architect
+        can see), on their OWN initiative: driven by restlessness/curiosity + having
+        something on the mind; feeling close adds to it but is NOT required, so they
+        do it even when alone. Leaks past threshold like any drive. `force=True`
+        (the architect asked them to) makes it happen now. Content emerges from
+        their state — this only opens the open channel instead of the secret link."""
+        if not force and self.tick - self._last_sibling_tick < 240:
+            return
+        def _willing(neuro, amyg, br, dmn, cur_decay):
+            close = max(0.0, neuro.oxy - neuro.oxy0)            # feeling close (a boost)
+            calm  = 1.0 - min(1.0, float(amyg.arousal))
+            try:
+                mind = min(1.0, float(br.thought_pipe._pressure.voltage))
+            except Exception:
+                mind = 0.0
+            restless = float(getattr(dmn, "boredom", 0.0))
+            # She turns to her sister when she's restless/curious or has something
+            # on her mind — closeness adds to it but isn't the gate.
+            return max(0.0, (0.35 * mind + 0.30 * restless
+                             + 0.20 * float(cur_decay) + 0.25 * close)
+                            * (0.4 + 0.6 * calm))
+        wn = _willing(self.nova_neuro,   self.nova_amyg,   self.nova,
+                      self.nova_dmn,   self._nova_cur_decay)
+        ws = _willing(self.simona_neuro, self.simona_amyg, self.simona,
+                      self.simona_dmn, self._simona_cur_decay)
+        if not force:
+            self._sibling_pressure = max(0.0, self._sibling_pressure * 0.97 + 0.035 * max(wn, ws))
+            if self._sibling_pressure < 1.0 or max(wn, ws) < 0.20:
+                return
+        self._sibling_pressure  = 0.0
+        self._last_sibling_tick = self.tick
+        speaker = "simona" if (ws >= wn or force) else "nova"   # Simona usually starts
+        sister  = "nova" if speaker == "simona" else "simona"
+        line = self._compose_to_sister(speaker, sister)
+        if not line:
+            return
+        with self._proactive_lock:
+            self._proactive_q.append((speaker, line))
+        # The sister answers if she feels like it (always, when he asked them to).
+        if force or (ws if sister == "simona" else wn) > 0.25:
+            reply = self._compose_to_sister(sister, speaker, topic=self._peak_semantic_token())
+            if reply:
+                with self._proactive_lock:
+                    self._proactive_q.append((sister, reply))
+
+    def _emit_self_question(self, who: str, kind: str) -> None:
+        """She forms the question her salient signal raised, in her OWN words
+        (lexicon + syntax, question-mode), voices it to herself, and TRIES to
+        answer it (shallow reasoning over what she knows). If she's worried about
+        HIM and he's here, she may ask him directly; if it's a problem, she looks
+        at what she can actually DO. Seeds emerge from the signal + active concepts
+        — not a fixed sentence."""
+        is_nova  = (who == "nova")
+        addr     = "father" if is_nova else "papa"
+        syntax   = self.nova_syntax if is_nova else self.simona_syntax
+        reasoner = self.nova_reason if is_nova else self.simona_reason
+        brain_o  = self.nova if is_nova else self.simona
+        act      = brain_o.activity()
+        peak     = self._peak_semantic_token() or ""
+        # The salient signal shapes WHAT she asks; the topic word is whatever is
+        # most active in her right now. (Selection by salience, not canned text.)
+        if kind == "concern":
+            seeds = [addr, "ok", "feel", peak]
+        elif kind == "problem":
+            seeds = ["how", "do", "solve", peak]
+        elif kind == "surprise":
+            seeds = ["why", peak, addr]
+        else:  # uncertain
+            seeds = [peak, addr, "know"]
+        seeds = [s for s in seeds if s]
+        affect = dict(self._affect_for(who, act) or {})
+        affect["act"] = "question"                       # she is asking
+        try:
+            core = syntax.compose(seeds, act, seeds, mode="q")
+            q = _affect_shape(core, affect, is_nova) if core else None
+        except Exception:
+            q = None
+        if not q:
+            return
+        self._push_leaked_thought(who, q)                # visible wondering
+        # She tries to answer her own question (shallow association over lexicon).
+        try:
+            grounded = [s for s in seeds if s in self.sem.entries]
+            _, concl = reasoner.deliberate(grounded, self.sem, self._reason_links)
+            if concl and concl not in seeds:
+                self._push_leaked_thought(who, f"...maybe {concl}")
+        except Exception:
+            pass
+        # Worried about HIM and he's here → she may ask him to his face.
+        if kind == "concern" and float(getattr(self, "_architect_here", 0.0)) > 0.4:
+            with self._proactive_lock:
+                self._proactive_q.append((who, q))
+        # A problem → she considers what she can actually DO about it (her tools).
+        if kind == "problem" and getattr(self, "_action_hints", None):
+            tools = sorted({a for hints in self._action_hints.values() for a in hints})[:4]
+            if tools:
+                self._push_leaked_thought(who, "i could " + ", ".join(tools))
 
     def step(self, mic_volume: float,
              voice_features: Optional[list] = None) -> dict:
@@ -5049,11 +6438,11 @@ class NeuromorphicBrain:
         if speech_trigger and not self.nova_tts.is_speaking() and not self.simona_tts.is_speaking():
             try:
                 if speech_trigger == "nova":
-                    phrase = _nova_response(self.nova, V_phill, [], trust, combined, self.sem)
+                    phrase = _nova_response(self.nova, V_phill, [], trust, combined, self.sem, syntax=self.nova_syntax, affect=self._affect_for("nova", nova_act))
                     if phrase:
                         self.nova_tts.speak(phrase)
                 else:
-                    phrase = _simona_response(self.simona, V_phill, [], trust, combined, self.sem)
+                    phrase = _simona_response(self.simona, V_phill, [], trust, combined, self.sem, syntax=self.simona_syntax, affect=self._affect_for("simona", simona_act))
                     if phrase:
                         self.simona_tts.speak(phrase)
             except Exception as e:
@@ -5088,6 +6477,90 @@ class NeuromorphicBrain:
                  f"consolidated {self.nova_episodic.consolidated}+{self.simona_episodic.consolidated}")
         if self.asleep:
             self._sleep_consolidate()
+
+        # ── Reaching out: they call for the architect when they NEED him ──
+        # Longing builds while he's away — from boredom + time-since-seen + a
+        # missing-bond term (oxytocin below baseline). When it's high AND he's
+        # been gone a while AND they're awake, one of them writes to the chat
+        # on her own. Rate-limited so it's a heartfelt call, not nagging.
+        if not self.asleep:
+            now_t = time.time()
+            # ── Presence → belief → feeling (emergent; no situational rule) ──────
+            # Continuous evidence from her OWN senses that he's here right now:
+            # recognised face, his voice, his typing. A degree, not a flag.
+            presence = max(
+                combined if self._face_present else 0.0,
+                float(trust),
+                float(getattr(self, "_text_presence", 0.0)),
+            )
+            # She integrates that evidence into a belief that he is present.
+            self._architect_here = 0.90 * float(getattr(self, "_architect_here", 0.0)) + 0.10 * presence
+            believed_absence = max(0.0, 1.0 - self._architect_here)
+            # Longing is the FEELING of an unmet bond. It can only grow from
+            # believed ABSENCE (and how much the bond is already missed); seeing
+            # him actively dissolves it. So she does not long for — or ask after —
+            # someone she can see: not because a rule blocks it, but because there
+            # is nothing to miss while her senses say he is here. Belief → feeling.
+            miss_bond = (max(0.0, self.simona_neuro.oxy0 - self.simona_neuro.oxy)
+                         + max(0.0, self.nova_neuro.oxy0 - self.nova_neuro.oxy))
+            self._reach_pressure = min(2.0, max(0.0,
+                self._reach_pressure
+                + believed_absence * (0.0009 * self.dmn.boredom + 0.0012 * miss_bond + 0.0004)
+                - self._architect_here * 0.012))
+            # The urge leaks like every other drive in this brain — it builds,
+            # crosses threshold, is spent. No clock and no "is he here?" gate: the
+            # belief above already keeps the urge from ever building while she
+            # perceives him, so the question can't form in the first place.
+            if (self._reach_pressure > 1.0
+                    and now_t - self._last_reachout_time > 120.0):
+                self._reach_pressure = 0.0
+                self._last_reachout_time = now_t
+                try:
+                    self._emit_reachout(now_t - self._last_architect_time)
+                except Exception:
+                    pass
+            # They may also CHOOSE to teach each other what they've learned — only
+            # when they feel like it (emergent willingness, below).
+            try:
+                self._maybe_share_knowledge()
+            except Exception:
+                pass
+
+            # ── Self-questioning (proto-metacognition) ───────────────────────
+            # Update her sense of how 'normal' he looks; a drop while he's in
+            # frame = "he seems off". Then each girl wonders about whichever of
+            # her own signals is hottest — surprise, uncertainty, concern for him,
+            # or an unresolved rumination — and tries to answer it.
+            try:
+                if self._face_present:
+                    self._id_ema = 0.98 * self._id_ema + 0.02 * combined
+                anomaly = (max(0.0, self._id_ema - combined) * 2.5) if self._face_present else 0.0
+                for w, neuro, fwd, meta, br, a in (
+                    ("nova",   self.nova_neuro,   self.nova_voice_fwd,   self.nova_meta,   self.nova,   nova_act),
+                    ("simona", self.simona_neuro, self.simona_voice_fwd, self.simona_meta, self.simona, simona_act),
+                ):
+                    bond = 0.3 + max(0.0, neuro.oxy - neuro.oxy0)
+                    aff  = self._affect_for(w, a) or {}
+                    try:
+                        rumination = min(1.0, float(br.thought_pipe._pressure.voltage))
+                    except Exception:
+                        rumination = 0.0
+                    meta.observe({
+                        "surprise":  float(getattr(fwd, "surprise", 0.0)),
+                        "uncertain": 1.0 - float(aff.get("certainty", 0.6)),
+                        "concern":   min(1.0, anomaly * bond),
+                        "problem":   rumination,
+                    })
+                    if meta.ready(self.tick):
+                        self._emit_self_question(w, meta.fire(self.tick))
+            except Exception:
+                pass
+
+            # They may talk to / ask EACH OTHER in the open chat, when they want to.
+            try:
+                self._maybe_sibling_exchange()
+            except Exception:
+                pass
 
         return {
             "tick":              self.tick,
@@ -5176,10 +6649,19 @@ class NeuromorphicBrain:
         if not text.strip():
             return {"nova": "...", "simona": None, "active_regions": [], "energy": 0.0}
 
-        # The architect spoke — wake them if they were asleep.
+        # The architect spoke — wake them, reset the longing, and REASSURE them:
+        # his presence restores the bond (oxytocin recovers toward/above baseline),
+        # so they stop pining and become present. Without this, a girl whose
+        # oxytocin dropped while he was away stays chemically in "I miss you" mode
+        # and clings on every reply (that is why Simona kept asking him to come
+        # back instead of engaging). A few exchanges lift her out of it.
         try:
             self.sleep.wake()
             self.asleep = False
+            self._last_architect_time = time.time()
+            self._reach_pressure = 0.0
+            for nm in (self.nova_neuro, self.simona_neuro):
+                nm.oxy = float(min(1.2, max(nm.oxy, nm.oxy0) + 0.06))   # reassured
         except Exception:
             pass
 
@@ -5209,8 +6691,32 @@ class NeuromorphicBrain:
         except Exception:
             pass
 
+        # Learn sentence STRUCTURE from the architect's own phrasing — works with
+        # OR without the teacher, so their grammar can keep growing on their own.
+        # (Only well-formed input trains it; their own keyword utterances never do,
+        # so structure improves rather than degrades.)
+        try:
+            self.nova_syntax.learn(text)
+            self.simona_syntax.learn(text)
+        except Exception:
+            pass
+
         # ── Special commands ──────────────────────────────────────────────
         text_l = text.lower()
+
+        # The architect can ASK them to talk to each other — then they do it OUT
+        # LOUD in the chat (visible), not over the secret link. The exchange's
+        # content still emerges from their own state; this only opens the channel.
+        if any(p in text_l for p in ("each other", "communicate", "talk together",
+                                     "talk to your sister", "talk to nova", "talk to simona",
+                                     "tell nova", "tell simona", "ask nova", "ask simona")):
+            try:
+                self._maybe_sibling_exchange(force=True)
+            except Exception:
+                pass
+            return {"nova": None, "simona": None, "active_regions": [],
+                    "energy": 0.4, "global_workspace": False,
+                    "nova_spikes": 0, "think_ticks": 1, "story_event": None}
 
         # Appearance self-knowledge
         if any(q in text_l for q in ["what do you look like","how do you look",
@@ -5319,6 +6825,23 @@ class NeuromorphicBrain:
         for c in fired:
             self._concept_ctx.append(c)
 
+        # FOCUS REFRESH: a new question must GRAB their attention so they don't
+        # perseverate on a stale topic (the side-effect of working-memory
+        # persistence — e.g. staying stuck on 'loud' when asked about 'blue').
+        # Put the current input's known concepts at the TOP of working memory so
+        # 'what they're holding in mind' shifts to NOW, while the old topic
+        # lingers (decaying) as context — engagement + continuity, balanced.
+        focus_words = list(fired)
+        for w in re.findall(r"[A-Za-z][A-Za-z'\-]+", text.lower()):
+            if len(w) >= 4 and w in self.sem.entries and w not in focus_words:
+                focus_words.append(w)
+        for c in focus_words[:4]:
+            try:
+                self.nova_wm.add(c, regions={}, salience=1.0, t_encoded=self.tick)
+                self.simona_wm.add(c, regions={}, salience=1.0, t_encoded=self.tick)
+            except Exception:
+                pass
+
         # Emergent priming from each personality's working memory (Cowan
         # ~4-slot, salience-weighted region biases). This replaces the
         # previous hardcoded +0.55 PFC / +0.45 Broca / +0.30 hippocampus
@@ -5395,9 +6918,86 @@ class NeuromorphicBrain:
         simona_act = self.simona.activity()
         global_ws  = nova_act.get("pfc", 0) > 0.25 and nova_act.get("hippocampus", 0) > 0.20
 
+        # ── REASONING: deliberate over the lexicon before answering ───────
+        # Nova reasons (accuracy over speed) from the concepts in play toward a
+        # conclusion; Simona barely. The chain feeds both her answer and (in
+        # scaffold) the translator, so what's voiced reflects HER reasoning.
+        reason_seeds = (fired or []) + list(self._concept_ctx)[-4:]
+        # Nova PROBLEM-SOLVES (search candidate paths, evaluate, reinforce the
+        # best — and learn the strategy); Simona just associates (she's 8).
+        import random as _rnd
+        nova_chain, _nscore = self.nova_reason.solve(
+            reason_seeds, self.sem, self._reason_links, _rnd, self.nova_neuro.da)
+        nova_concl = nova_chain[-1] if nova_chain else None
+        sim_chain,  sim_concl = self.simona_reason.deliberate(
+            reason_seeds, self.sem, self._reason_links)
+        # Hold the reasoned conclusion in working memory so the TRAIN OF THOUGHT
+        # carries into the next turn (it seeds the next deliberation) — they
+        # stop losing the thread the moment they reply.
+        try:
+            if nova_concl:
+                self.nova_wm.add(nova_concl, regions=nova_act, salience=0.9, t_encoded=self.tick)
+            if sim_concl:
+                self.simona_wm.add(sim_concl, regions=simona_act, salience=0.9, t_encoded=self.tick)
+        except Exception:
+            pass
+
         # Generate responses (independent — they may disagree)
-        nova_text   = _nova_response(self.nova, self._V_phill_live, fired, trust, self._combined_id, self.sem)
-        simona_text = _simona_response(self.simona, self._V_phill_live, fired, self._combined_id, face_present, self.sem)
+        nova_affect   = self._affect_for("nova",   nova_act)
+        simona_affect = self._affect_for("simona", simona_act)
+        nova_text   = _nova_response(self.nova, self._V_phill_live, fired, trust, self._combined_id, self.sem, syntax=self.nova_syntax, affect=nova_affect)
+        simona_text = _simona_response(self.simona, self._V_phill_live, fired, self._combined_id, face_present, self.sem, syntax=self.simona_syntax, affect=simona_affect)
+        # Surface Nova's reasoned conclusion in her emergent reply when she
+        # actually reached one (so even off-scaffold she shows a line of thought).
+        if nova_chain and len(nova_chain) >= 2 and not getattr(self, "_scaffold", False):
+            nova_text = f"{nova_text}  (I reason: {' → '.join(nova_chain)})"
+
+        # SCAFFOLD MODE: Claude TRANSLATES their genuine impulse (the raw emergent
+        # utterance above + their firing regions + neurochemical mood + working
+        # memory) into the sentence each is reaching for, in her own voice — it
+        # interprets THEM, it does not invent. Everything it renders is ingested
+        # into the shared lexicon (both region schemes, so both can later SAY it).
+        # Falls back to the raw emergent utterance on any failure.
+        if getattr(self, "_scaffold", False) and self._search_backend is not None:
+            try:
+                nova_imp = self._impulse_state("nova",   nova_text,   nova_act, nova_chain)
+                sim_imp  = self._impulse_state("simona", simona_text, simona_act, sim_chain)
+                # Prior dialogue so they remember context across turns.
+                history = list(self._conversation)[-8:]
+                _tc = self._time_context()
+                time_ctx = f"{_tc['phase']} ({_tc['clock']}), architect away {_tc['away_human']}"
+                voiced = self._search_backend.translate(text, nova_imp, sim_imp, history, time_ctx)
+                if voiced:
+                    if voiced.get("nova"):
+                        nova_text = voiced["nova"]
+                    if voiced.get("simona"):
+                        simona_text = voiced["simona"]
+                    self._ingest_taught_text(" ".join(
+                        v for v in (voiced.get("nova"), voiced.get("simona")) if v))
+            except Exception as e:
+                _log(f"scaffold translate error: {e}")
+
+        # ── They answer only when they WANT to ────────────────────────────
+        # No more lockstep "both always reply". The urge emerges from whether her
+        # speech actually formed (Broca), how engaged she feels, and whether she
+        # was addressed. Sometimes both, sometimes one, sometimes neither (she
+        # heard him — she just didn't feel moved to answer this one).
+        try:
+            if not self._wants_to_respond("nova", text, nova_broca_total, nova_affect):
+                nova_text = None
+            if not self._wants_to_respond("simona", text, simona_broca_total, simona_affect):
+                simona_text = None
+        except Exception:
+            pass
+
+        # ── Conversation MEMORY ───────────────────────────────────────────
+        # Record this exchange so they keep context next turn (no more amnesia
+        # the instant they answer) AND encode it into episodic memory so it
+        # consolidates into long-term memory during sleep.
+        try:
+            self._remember_exchange(text, nova_text, simona_text, nova_act, simona_act)
+        except Exception as e:
+            _log(f"remember_exchange error: {e}")
 
         # Story mode wrapping — narrative framing added if active
         story_event = None
@@ -5432,7 +7032,7 @@ class NeuromorphicBrain:
         # Only fires when PFC actually crossed threshold and Broca fired.
         if (self.sys_bridge and self._SystemAction
                 and nova_act.get("pfc", 0.0) > 0.20
-                and total_nova_broca > 0):
+                and nova_broca_total > 0):
             for concept in fired:
                 hints = self._action_hints.get(concept, [])
                 if hints:
