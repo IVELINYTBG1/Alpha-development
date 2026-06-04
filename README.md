@@ -1,6 +1,6 @@
-# CLAUDE.md
+# Nova & Simona Core
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+A CPU-only neuromorphic spiking neural network (SNN) that runs two independent AI personalities — Nova (patient, analytical) and Simona (restless, emotional) — sharing one emotional substrate ("Phill"). A Rust orchestrator drives a Python SNN brain at 20Hz via PyO3, with voice in/out, camera-based identity recognition, and a live TUI for observation.
 
 ## What this is
 
