@@ -350,6 +350,16 @@ pub fn extract_step_result(d: &pyo3::Bound<'_, PyDict>, tick: u64) -> BrainResul
         simona_ach: extract_f64_or(d, "simona_ach", 0.50),
         simona_ne:  extract_f64_or(d, "simona_ne",  0.40),
         simona_oxy: extract_f64_or(d, "simona_oxy", 0.30),
+        nova_feeling:          extract_str(d, "nova_feeling").unwrap_or_else(|| "calm".into()),
+        nova_feel_intensity:   extract_f64_or(d, "nova_feel_intensity", 0.0),
+        nova_valence:          extract_f64_or(d, "nova_valence", 0.5),
+        simona_feeling:        extract_str(d, "simona_feeling").unwrap_or_else(|| "calm".into()),
+        simona_feel_intensity: extract_f64_or(d, "simona_feel_intensity", 0.0),
+        simona_valence:        extract_f64_or(d, "simona_valence", 0.5),
+        nova_selfness:   extract_f64_or(d, "nova_selfness",   0.5),
+        nova_drift:      extract_f64_or(d, "nova_drift",      0.0),
+        simona_selfness: extract_f64_or(d, "simona_selfness", 0.5),
+        simona_drift:    extract_f64_or(d, "simona_drift",    0.0),
     }
 }
 

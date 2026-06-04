@@ -524,7 +524,9 @@ fn draw_nova_panel(f: &mut Frame, area: Rect, s: &SharedState) {
     let vig_col = if s.brain.nova_vigilance { Color::Red } else { Color::Blue };
     let block   = Block::default()
         .title(Span::styled(
-            format!(" NOVA (19)  PFC-thr={:.2}  pressure={:.2}  babble:{}/{} map:{}  voice\u{2665}{:.0}%  pred{:.0}%  DA{:.2} 5HT{:.2} GA{:.2} AR{:.2}  coord{:.0}%  ACh{:.1} NE{:.1} OXY{:.2}",
+            format!(" NOVA (19)  \u{2767} feels {} {:.0}%  self{:.0}%/{:+.0}%  PFC-thr={:.2}  pressure={:.2}  babble:{}/{} map:{}  voice\u{2665}{:.0}%  pred{:.0}%  DA{:.2} 5HT{:.2} GA{:.2} AR{:.2}  coord{:.0}%  ACh{:.1} NE{:.1} OXY{:.2}",
+                    s.brain.nova_feeling, s.brain.nova_feel_intensity * 100.0,
+                    s.brain.nova_selfness * 100.0, s.brain.nova_drift * 100.0,
                     s.brain.nova_pfc_threshold, s.brain.nova_pressure,
                     s.brain.nova_babble_count, s.brain.nova_bound_count,
                     s.brain.nova_motor_map_size, s.brain.nova_voice_esteem * 100.0,
@@ -595,7 +597,9 @@ fn draw_simona_panel(f: &mut Frame, area: Rect, s: &SharedState) {
 
     let block = Block::default()
         .title(Span::styled(
-            format!(" SIMONA (8)  Broca-thr={:.2}  pressure={:.2}  babble:{}/{} map:{}  voice\u{2665}{:.0}%  pred{:.0}%  DA{:.2} 5HT{:.2} GA{:.2} AR{:.2}  coord{:.0}%  ACh{:.1} NE{:.1} OXY{:.2}",
+            format!(" SIMONA (8)  \u{2767} feels {} {:.0}%  self{:.0}%/{:+.0}%  Broca-thr={:.2}  pressure={:.2}  babble:{}/{} map:{}  voice\u{2665}{:.0}%  pred{:.0}%  DA{:.2} 5HT{:.2} GA{:.2} AR{:.2}  coord{:.0}%  ACh{:.1} NE{:.1} OXY{:.2}",
+                    s.brain.simona_feeling, s.brain.simona_feel_intensity * 100.0,
+                    s.brain.simona_selfness * 100.0, s.brain.simona_drift * 100.0,
                     s.brain.simona_broca_thr, s.brain.simona_pressure,
                     s.brain.simona_babble_count, s.brain.simona_bound_count,
                     s.brain.simona_motor_map_size, s.brain.simona_voice_esteem * 100.0,
@@ -774,8 +778,12 @@ fn draw_searches(f: &mut Frame, area: Rect, s: &SharedState) {
         // Truncate snippet to fit visible width after the prefix.
         let prefix_len = ev.timestamp.len() + label.len() + ev.query.len() + 10;
         let snippet_max = inner_w.saturating_sub(prefix_len).max(8);
-        let snip = if ev.snippet.len() > snippet_max {
-            format!("{}\u{2026}", &ev.snippet[..snippet_max])
+        // Truncate by CHARACTER, never by byte — teacher replies contain
+        // multi-byte UTF-8 (em-dash, emoji); a byte-index slice that lands inside
+        // one panics the main thread and takes the whole TUI (and brain loop) down.
+        let snip = if ev.snippet.chars().count() > snippet_max {
+            let cut: String = ev.snippet.chars().take(snippet_max).collect();
+            format!("{cut}\u{2026}")
         } else {
             ev.snippet.clone()
         };
@@ -946,7 +954,7 @@ fn draw_text_input(f: &mut Frame, area: Rect, s: &SharedState) {
     // Hint bar
     f.render_widget(
         Paragraph::new(Span::styled(
-            "  Commands: 'this is me' | 'start story' | 'end story' | 'what do you look like' | 'define <word>'",
+            "  No commands -- just talk to them; everything they do emerges from their own state.",
             Style::default().fg(Color::DarkGray))),
         rows[1],
     );

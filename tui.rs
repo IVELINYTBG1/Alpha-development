@@ -730,7 +730,7 @@ fn draw_text_input(f: &mut Frame, area: Rect, s: &SharedState) {
     // Hint bar
     f.render_widget(
         Paragraph::new(Span::styled(
-            "  Commands: 'this is me' | 'start story' | 'end story' | 'what do you look like' | 'define <word>'",
+            "  No commands -- just talk to them; everything they do emerges from their own state.",
             Style::default().fg(Color::DarkGray))),
         rows[1],
     );

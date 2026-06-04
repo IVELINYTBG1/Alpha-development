@@ -174,6 +174,22 @@ pub struct BrainResult {
     pub simona_ach: f64,
     pub simona_ne:  f64,
     pub simona_oxy: f64,
+
+    // Core felt emotion (AffectCore readout): the named feeling, its strength
+    // [0,1], and valence [0,1] (0 = unpleasant, 0.5 = neutral, 1 = pleasant).
+    pub nova_feeling:          String,
+    pub nova_feel_intensity:   f64,
+    pub nova_valence:          f64,
+    pub simona_feeling:        String,
+    pub simona_feel_intensity: f64,
+    pub simona_valence:        f64,
+
+    // Personality drift (mechanism #4): how 'in character' each is right now
+    // (selfness 0..1) and how much that has grown this session (drift, +/-).
+    pub nova_selfness:   f64,
+    pub nova_drift:      f64,
+    pub simona_selfness: f64,
+    pub simona_drift:    f64,
 }
 
 impl Default for BrainResult {
@@ -202,6 +218,9 @@ impl Default for BrainResult {
             asleep:false, sleep_pressure:0.0, nova_episodes:0, simona_episodes:0,
             nova_ach:0.50, nova_ne:0.40, nova_oxy:0.30,
             simona_ach:0.50, simona_ne:0.40, simona_oxy:0.30,
+            nova_feeling:"calm".into(),   nova_feel_intensity:0.0,   nova_valence:0.5,
+            simona_feeling:"calm".into(), simona_feel_intensity:0.0, simona_valence:0.5,
+            nova_selfness:0.5, nova_drift:0.0, simona_selfness:0.5, simona_drift:0.0,
         }
     }
 }
