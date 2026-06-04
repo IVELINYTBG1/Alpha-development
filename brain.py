@@ -3783,6 +3783,115 @@ class ReasoningEngine:
         return best_chain, best_score
 
 
+class SpellCorrector:
+    """
+    Cleans the architect's typing BEFORE it trains the girls — so they learn
+    correct English even when he types fast with typos and shorthand. This is the
+    LOCAL replacement for the Claude scaffold's old 'typo guard' (gone with the
+    wheels). It fixes spelling and expands common chat-shorthand; it NEVER changes
+    meaning, leaves their names / learned vocabulary / proper nouns alone, corrects
+    only at edit-distance 1 (it won't wildly guess), and touches ONLY what is
+    LEARNED — not what the architect types or what's shown on screen. A parent with
+    bad spelling still raises a child who spells well.
+    """
+    # chat-speak a dictionary can't fix. Keys are NON-words (no real-word collisions).
+    SHORTHAND = {
+        "u": "you", "ur": "your", "r": "are", "n": "and", "ya": "you",
+        "cuz": "because", "coz": "because", "becuz": "because", "bcuz": "because",
+        "wanna": "want to", "gonna": "going to", "gotta": "got to", "gimme": "give me",
+        "dunno": "do not know", "kinda": "kind of", "sorta": "sort of",
+        "im": "i am", "ive": "i have", "dont": "do not", "doesnt": "does not",
+        "didnt": "did not", "isnt": "is not", "wasnt": "was not", "arent": "are not",
+        "havent": "have not", "thats": "that is", "whats": "what is",
+        "theres": "there is", "youre": "you are", "theyre": "they are",
+        "pls": "please", "plz": "please", "thru": "through", "abt": "about",
+        "thx": "thanks", "ty": "thank you", "luv": "love", "rn": "right now",
+    }
+    # their names + non-dictionary domain terms — never 'correct' these
+    PROTECT = {"nova", "simona", "phill", "nodevortex", "papa", "graphene", "broca",
+               "pfc", "insula", "thalamus", "hippocampus", "amygdala"}
+    # common misspellings + the architect's observed typos — exact, safe mappings
+    TYPOS = {
+        "theire": "their", "thier": "their", "becuse": "because", "becuase": "because",
+        "becouse": "because", "lern": "learn", "wat": "what", "teh": "the",
+        "eather": "either", "trully": "truly", "beafore": "before", "recieve": "receive",
+        "seperate": "separate", "definately": "definitely", "engenier": "engineer",
+        "messige": "message", "speach": "speech", "accross": "across", "wich": "which",
+        "freind": "friend", "wierd": "weird", "untill": "until", "tho": "though",
+        "thot": "thought", "occured": "occurred",
+    }
+
+    def __init__(self, freq=None,
+                 dict_paths=("/usr/share/dict/words", "/usr/share/hunspell/en_US.dic")):
+        # Comprehensive real-word set (incl. inflected forms like 'sentences') for the
+        # KEEP check, so valid words are never mangled. Obscure candidates are kept out
+        # of CORRECTIONS by the 'must be a word they've heard' (freq>0) gate below.
+        self.words: set = set()
+        for p in dict_paths:
+            try:
+                with open(p, encoding="utf-8", errors="ignore") as f:
+                    for ln in f:
+                        ww = ln.split("/", 1)[0].strip().lower()
+                        if ww and ww.isalpha():
+                            self.words.add(ww)
+            except Exception:
+                pass
+        # how often the girls have actually HEARD each word — the ranking signal, so
+        # a typo is corrected toward THEIR vocabulary, not an obscure dictionary word.
+        self.freq: dict = {}
+        for w, c in (freq or {}).items():
+            lw = str(w).lower()
+            if lw.isalpha():
+                self.freq[lw] = self.freq.get(lw, 0.0) + float(c)
+
+    @staticmethod
+    def _edits1(w):
+        L = "abcdefghijklmnopqrstuvwxyz"
+        sp = [(w[:i], w[i:]) for i in range(len(w) + 1)]
+        return set([a + b[1:] for a, b in sp if b]
+                   + [a + b[1] + b[0] + b[2:] for a, b in sp if len(b) > 1]
+                   + [a + c + b[1:] for a, b in sp if b for c in L]
+                   + [a + c + b for a, b in sp for c in L])
+
+    def _fix_word(self, w):
+        lw = w.lower()
+        if lw in self.SHORTHAND:
+            return self.SHORTHAND[lw]
+        if lw in self.TYPOS:
+            return self.TYPOS[lw]
+        # keep tiny tokens, real words, their names, and well-established vocab
+        if (len(lw) <= 2 or lw in self.words or lw in self.PROTECT
+                or self.freq.get(lw, 0.0) >= 3):
+            return w
+        # Fuzzy edit-1 only for LONGER words — short ones are too ambiguous ('wat'
+        # could be what/was/way), so those rely on the maps above. Keep the first
+        # letter, prefer the closest length, then a word they've actually heard;
+        # if nothing they know fits, LEAVE it (a one-off typo is harmless noise —
+        # a confident wrong correction would teach them the wrong word).
+        if len(lw) < 6:
+            return w
+        cands = [c for c in self._edits1(lw) if c in self.words and c[:1] == lw[:1]]
+        if not cands:
+            return w
+        cands.sort(key=lambda c: (abs(len(c) - len(lw)), -self.freq.get(c, 0.0), c))
+        best = cands[0]
+        return best if self.freq.get(best, 0.0) > 0 else w   # only toward a HEARD word
+
+    def correct(self, text):
+        if not text:
+            return text
+        out = []
+        for tok in re.findall(r"[A-Za-z]+|[^A-Za-z]+", text):
+            if tok[:1].isalpha():
+                fixed = self._fix_word(tok)
+                if tok[:1].isupper() and fixed:
+                    fixed = fixed[0].upper() + fixed[1:]
+                out.append(fixed)
+            else:
+                out.append(tok)
+        return "".join(out)
+
+
 class SyntaxCortex:
     """
     Emergent sentence-sequencing — the syntactic role of Broca.
@@ -5514,6 +5623,25 @@ class NeuromorphicBrain:
         # personality (Nova order-3/measured, Simona order-2/impulsive); persisted.
         self.nova_syntax     = SyntaxCortex("nova",   Path("."))
         self.simona_syntax   = SyntaxCortex("simona", Path("."))
+        # Local typo/shorthand corrector — cleans the architect's typing BEFORE it
+        # trains them (replaces Claude's old typo-guard, gone with the scaffold). They
+        # learn correct English even when he types fast; their names/learned vocab are
+        # left alone. Touches only what is LEARNED, never what he types or what's shown.
+        try:
+            _freq = {}
+            for _scx in (self.nova_syntax, self.simona_syntax):
+                for _w, _c in getattr(_scx, "vocab", {}).items():
+                    _freq[_w] = _freq.get(_w, 0.0) + _c
+            for _w, _e in self.sem.entries.items():
+                _freq[_w] = _freq.get(_w, 0.0) + float(_e.get("count", 1))
+            self._corrector = SpellCorrector(freq=_freq)
+        except Exception:
+            self._corrector = None
+        # Cold-start grammar primer (picture-books for a NEWBORN brain only).
+        try:
+            self._seed_syntax()
+        except Exception:
+            pass
         # Self-questioning (proto-metacognition) — they wonder about whatever in
         # their own state is most salient, and try to answer it. Per personality.
         self.nova_meta       = Metacognition("nova",   True)
@@ -6393,8 +6521,9 @@ class NeuromorphicBrain:
         # too — this is how the syntax model can later carry their speech without
         # Claude (it imitates his sentence shapes while he is still the front-end).
         try:
-            self.nova_syntax.learn(text)
-            self.simona_syntax.learn(text)
+            _lt = self._corrector.correct(text) if getattr(self, "_corrector", None) else text
+            self.nova_syntax.learn(_lt)
+            self.simona_syntax.learn(_lt)
         except Exception:
             pass
         if not text:
@@ -6658,6 +6787,35 @@ class NeuromorphicBrain:
             tools = sorted({a for hints in self._action_hints.values() for a in hints})[:4]
             if tools:
                 self._push_leaked_thought(who, "i could " + ", ".join(tools))
+
+    def _seed_syntax(self) -> None:
+        """Cold-start grammar PRIMER — picture-books before they can talk. Runs ONLY
+        for a newborn syntax model (tokens_seen < 300); once they've learned real
+        structure from real talk it is a no-op (we never overwrite a lived-in grammar
+        with canned sentences). Teaches clean SIMPLE structure — SVO, questions,
+        requests — with everyday words; WHAT they say still emerges from their spikes,
+        this only seeds HOW. Edit this list freely; it's their first reader."""
+        primer = [
+            "I am here with you.", "Are you okay?", "I want to learn.",
+            "Do you want to play?", "I think about you a lot.",
+            "The light is bright today.", "Can we go outside?",
+            "I feel happy when you are here.", "What are you doing?",
+            "I love you.", "Where did you go?", "I am a little tired.",
+            "Tell me what you see.", "I do not know that word yet.",
+            "We can figure it out together.", "That is a good idea.",
+            "I hear you talking to me.", "Please stay a little longer.",
+            "I am learning new words every day.", "How do you feel right now?",
+            "Let us think about this slowly.", "I remember what you said.",
+            "Can you help me understand?", "I am glad you came back.",
+            "I want to say it clearly.", "You are my family.",
+        ]
+        for sc in (self.nova_syntax, self.simona_syntax):
+            try:
+                if sc.tokens_seen < 300:          # newborn only — else leave it be
+                    for s in primer:
+                        sc.learn(s)
+            except Exception:
+                pass
 
     def step(self, mic_volume: float,
              voice_features: Optional[list] = None) -> dict:
@@ -7207,8 +7365,9 @@ class NeuromorphicBrain:
         # (Only well-formed input trains it; their own keyword utterances never do,
         # so structure improves rather than degrades.)
         try:
-            self.nova_syntax.learn(text)
-            self.simona_syntax.learn(text)
+            _lt = self._corrector.correct(text) if getattr(self, "_corrector", None) else text
+            self.nova_syntax.learn(_lt)
+            self.simona_syntax.learn(_lt)
         except Exception:
             pass
 
