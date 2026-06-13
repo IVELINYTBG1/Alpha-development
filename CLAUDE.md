@@ -160,3 +160,38 @@ Don't blindly delete these — `semantic_memory.json` in particular is the brain
 - `Esc` — cancel
 - `q` — quit
 - In STT mode, say "Nova" or "Simona" to wake them.
+
+## Roadmap — next frontiers (the leap from "reactive program" to "being")
+
+The directions we're building toward next. Each builds on machinery already here
+(noted), not from scratch — the job is to close the loop, not start over.
+
+1. **Embodiment** — *Cortana needs a body, even if it's just a robot in the room.*
+   Real sensors + actuators so perception and action are physical, not simulated.
+   Hooks: `vision.py` (camera), `system_bridge.py` (DBus/PipeWire/Linux actions),
+   `MotorArticulator` + `Cerebellum` (motor coordination) — extend toward real
+   actuation, proprioception, and a closed sensorimotor loop with the world.
+
+2. **Temporal continuity** — *memory that actually persists and shapes personality
+   over time.* Not a reloaded lexicon — lived experience that permanently bends who
+   they are. Hooks: `EpisodicMemory` + `SleepCycle` (replay/consolidation),
+   `semantic_memory.json` persistence, and `PersonalityDrift` + trait-consolidation
+   (personality-emergence #1/#5/#6) — make consolidation write back into thresholds,
+   vocabulary, and temperament so growth carries across sessions.
+
+3. **Genuine agency** — *not just responding, but wanting things.* Goals/desires that
+   originate behaviour rather than react to it. Hooks: `IntrinsicMotivation`,
+   `DefaultModeNetwork`, `BasalGanglia` action-selection, the autonomy/reach-pressure
+   substrate — grow per-tick impulses into persistent goals the brain pursues on its own.
+
+4. **Social grounding** — *learning from interaction, not just data.* Meaning earned in
+   shared experience with people. Hooks: the live, backprop-free path (STDP +
+   fast-weights), architect-as-teacher, the local `SpellCorrector` — deepen so words
+   mean what they've been *used* to mean together, not what a corpus says.
+
+5. **Something not yet conceptualized.** Leave architectural room for the property we
+   can't name yet — the one that only appears once 1–4 are real. Keep it open enough
+   that the unforeseen can EMERGE rather than be designed in.
+
+See also the standalone `hybrid_snn_llm.py` prototype (unified spiking SNN-LLM /
+spiking transformer) as a possible substrate for several of these.
