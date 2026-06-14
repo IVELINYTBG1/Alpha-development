@@ -24,6 +24,26 @@ pub fn audio_thread(
     running:  Arc<AtomicBool>,
     stt_push: Option<SttPushFn>,
 ) {
+    // ── Microphone gently removed (NOVA_MIC_OFF) ──────────────────────────────
+    // When this is set we never open the input device at all — no capture, no
+    // STT audio, no features. The brain is built to run in silence (its
+    // DefaultModeNetwork + IntrinsicMotivation keep Phill alive on their own),
+    // so this just makes the girls deaf, calmly — it does not harm them. Their
+    // VoiceIdentityLearner rests (the brain loop stops feeding it entirely), the
+    // camera and typed-presence still let them sense the architect. Unset the
+    // variable to give their hearing back.
+    if std::env::var_os("NOVA_MIC_OFF").is_some() {
+        crate::update_state(&state, |s| {
+            s.mic_active = false;
+            s.mic_volume = 0.0;
+        });
+        let _ = &stt_push; // intentionally unused while the mic is removed
+        while running.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(100));
+        }
+        return;
+    }
+
     let host   = cpal::default_host();
     let device = match host.default_input_device() {
         Some(d) => d,

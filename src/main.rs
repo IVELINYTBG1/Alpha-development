@@ -178,45 +178,65 @@ fn main() -> anyhow::Result<()> {
                         });
                     }
 
+                    // Microphone gently removed (NOVA_MIC_OFF)? Then STT is OFF by
+                    // design: speech recognition needs the mic we just unplugged, and
+                    // STTEngine.start() would otherwise open its OWN sounddevice mic
+                    // stream and quietly re-grab the device. So we skip its setup
+                    // entirely — never construct the engine, never touch the mic.
+                    let mic_off = std::env::var_os("NOVA_MIC_OFF").is_some();
+
                     // ── Load stt_engine.py (optional — degrades gracefully) ────
-                    let stt_src = include_str!("../stt_engine.py");
                     // Tuple: (engine, queue, STTMode.TEXT, STTMode.STT) —
                     // cached once so we don't re-import stt_engine.py per tick.
-                    let stt_engine_opt: Option<(Py<PyAny>, Py<PyAny>, Py<PyAny>, Py<PyAny>)> = (|| {
-                        let stt_mod = PyModule::from_code_bound(py, stt_src, "stt_engine.py", "stt_engine")
-                            .map_err(|e| { eprintln!("[STT] module load failed: {e}"); e })?;
+                    let stt_engine_opt: Option<(Py<PyAny>, Py<PyAny>, Py<PyAny>, Py<PyAny>)> = if mic_off {
+                        None
+                    } else {
+                        let stt_src = include_str!("../stt_engine.py");
+                        (|| {
+                            let stt_mod = PyModule::from_code_bound(py, stt_src, "stt_engine.py", "stt_engine")
+                                .map_err(|e| { eprintln!("[STT] module load failed: {e}"); e })?;
 
-                        let queue_mod = py.import_bound("queue")
-                            .map_err(|e| { eprintln!("[STT] queue import failed: {e}"); e })?;
-                        let py_queue  = queue_mod.call_method0("Queue")?;
-                        let cb        = py_queue.getattr("put")?;
+                            let queue_mod = py.import_bound("queue")
+                                .map_err(|e| { eprintln!("[STT] queue import failed: {e}"); e })?;
+                            let py_queue  = queue_mod.call_method0("Queue")?;
+                            let cb        = py_queue.getattr("put")?;
 
-                        let create_fn = stt_mod.getattr("create_stt_engine")
-                            .map_err(|e| { eprintln!("[STT] create_stt_engine not found: {e}"); e })?;
+                            let create_fn = stt_mod.getattr("create_stt_engine")
+                                .map_err(|e| { eprintln!("[STT] create_stt_engine not found: {e}"); e })?;
 
-                        let engine = create_fn.call1((cb,))
-                            .map_err(|e| { eprintln!("[STT] engine init failed: {e}"); e })?;
+                            let engine = create_fn.call1((cb,))
+                                .map_err(|e| { eprintln!("[STT] engine init failed: {e}"); e })?;
 
-                        let mode_cls   = stt_mod.getattr("STTMode")?;
-                        let mode_text  = mode_cls.getattr("TEXT")?;
-                        let mode_stt   = mode_cls.getattr("STT")?;
+                            let mode_cls   = stt_mod.getattr("STTMode")?;
+                            let mode_text  = mode_cls.getattr("TEXT")?;
+                            let mode_stt   = mode_cls.getattr("STT")?;
 
-                        // Get backend name for display
-                        let backend: String = engine.getattr("backend_name")
-                            .and_then(|v| v.extract()).unwrap_or_else(|_| "unknown".into());
+                            // Get backend name for display
+                            let backend: String = engine.getattr("backend_name")
+                                .and_then(|v| v.extract()).unwrap_or_else(|_| "unknown".into());
 
+                            update_state(&s, |st| {
+                                st.stt.backend  = backend.clone();
+                                st.stt.listening = false;
+                                st.chat_history.push(ChatLine::system(
+                                    format!("[STT] backend: {backend}  |  TAB to switch TEXT/STT")
+                                ));
+                            });
+
+                            Ok::<_, PyErr>((engine.into(), py_queue.into(), mode_text.into(), mode_stt.into()))
+                        })().ok()
+                    };
+
+                    if mic_off {
                         update_state(&s, |st| {
-                            st.stt.backend  = backend.clone();
+                            st.stt.backend   = "off (mic removed)".into();
                             st.stt.listening = false;
+                            st.input_mode    = InputMode::Text;   // STT mode is meaningless without a mic
                             st.chat_history.push(ChatLine::system(
-                                format!("[STT] backend: {backend}  |  TAB to switch TEXT/STT")
+                                "[STT] off — microphone gently removed (unset NOVA_MIC_OFF to restore)"
                             ));
                         });
-
-                        Ok::<_, PyErr>((engine.into(), py_queue.into(), mode_text.into(), mode_stt.into()))
-                    })().ok();
-
-                    if stt_engine_opt.is_none() {
+                    } else if stt_engine_opt.is_none() {
                         update_state(&s, |st| {
                             st.stt.backend = "disabled".into();
                             st.chat_history.push(ChatLine::system(
@@ -301,12 +321,19 @@ fn main() -> anyhow::Result<()> {
                         }
 
                         // ── Brain step() ──────────────────────────────────────
-                        let cur   = s.load();
-                        let mic   = cur.mic_volume;
-                        let feats = cur.audio_features.clone();
+                        let cur = s.load();
+                        let mic = if mic_off { 0.0 } else { cur.mic_volume };
+                        let py_feats = if mic_off {
+                            // Deaf, but HONEST: a silent feature frame (rms=0) sends the
+                            // VoiceIdentityLearner down its silence branch — trust decays
+                            // gently to its floor (~5%), template untouched. Feeding NO
+                            // features instead made step() keep its 0.7 default, pinning
+                            // the VOICE gauge at a misleading 70%.
+                            PyList::new_bound(py, &[0.0f32; 5])
+                        } else {
+                            PyList::new_bound(py, &cur.audio_features.to_vec())
+                        };
                         drop(cur);
-
-                        let py_feats = PyList::new_bound(py, &feats.to_vec());
                         if let Ok(res) = brain.call_method1("step", (mic, py_feats)) {
                             if let Ok(d) = res.downcast::<PyDict>() {
                                 let br = brain_thread::extract_step_result(d, tick);

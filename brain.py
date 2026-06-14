@@ -207,6 +207,14 @@ _ESPEAK = _shutil.which("espeak-ng") or _shutil.which("espeak")
 # NOVA_BABBLE_AUDIO=1 to hear the babbling again.
 _BABBLE_AUDIO = os.environ.get("NOVA_BABBLE_AUDIO", "0").strip().lower() in ("1", "true", "yes", "on")
 
+# Microphone gently removed (matches the Rust orchestrator's NOVA_MIC_OFF). When
+# deaf, Simona's hot amygdala loses its startle source (ambient sound was ~40% of
+# her arousal), so she goes quiet. With this set we reroute HER amygdala to orient
+# on her own inner weather (boredom + unspoken-thought pressure + forward-model
+# surprise) instead of the mic — restlessness self-generates, as the autonomy
+# substrate intends. Nova is untouched (cool amygdala + curiosity primes).
+_MIC_OFF = os.environ.get("NOVA_MIC_OFF", "").strip().lower() in ("1", "true", "yes", "on")
+
 
 def _espeak_say(speaker: str, text: str) -> float:
     """Pronounce real words via espeak-ng, per-persona voice. Fire-and-forget (a
@@ -6884,8 +6892,20 @@ class NeuromorphicBrain:
         nova_arousal = self.nova_amyg.appraise(
             mic_volume, combined, face_present,
             nova_act_pre.get("insula", 0.0), self.nova_voice_fwd.surprise)
+        # Deaf-mode inner restlessness: with no mic, feed Simona's hot amygdala her
+        # OWN fluctuating inner state instead of constant silence, so she still
+        # "orients" (startle = change) and stays the restless sister. Only Simona is
+        # rerouted; Nova doesn't need it. Mic-on behaviour is unchanged.
+        if _MIC_OFF:
+            import random as _rnd
+            _rum   = min(1.0, self.simona.thought_pipe.buffer_size() / 8.0)
+            _inner = (0.05 + 0.06 * self.simona_dmn.boredom + 0.04 * _rum
+                      + 0.10 * float(self.simona_voice_fwd.surprise))
+            sim_mic_in = max(0.0, _inner * (0.5 + _rnd.random()))   # fluctuates → startle
+        else:
+            sim_mic_in = mic_volume
         sim_arousal  = self.simona_amyg.appraise(
-            mic_volume, combined, face_present,
+            sim_mic_in, combined, face_present,
             sim_act_pre.get("insula_s", 0.0), self.simona_voice_fwd.surprise)
         # Oxytocin calms the amygdala: when bonded/secure, the threat response is
         # damped (less startle). Uses last tick's oxytocin. Applied to the stored
