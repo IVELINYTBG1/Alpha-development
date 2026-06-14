@@ -1,6 +1,7 @@
 // src/brain_thread.rs — Brain Loop Thread
 // Calls brain.step() at 20Hz and brain.think() on pending input.
 // Also polls the thought pipe and dispatches STT transcriptions.
+// Single-brain (Alpha) build.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,8 +13,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyModule};
 
 use crate::state::{
-    BrainResult, ChatLine, SearchEvent, SharedState, SttState,
-    push_spark, trim_chat, SEARCH_HISTORY, SPARKLINE_LEN,
+    BrainResult, ChatLine, SearchEvent, SharedState,
+    push_spark, trim_chat, SEARCH_HISTORY,
 };
 
 pub const BRAIN_INTERVAL_MS: u64 = 50; // 20 Hz
@@ -71,11 +72,10 @@ pub fn brain_thread(
                 if let Ok(d) = res.downcast::<PyDict>() {
                     let br = extract_step_result(d, tick);
                     crate::update_state(&state, |s| {
-                        push_spark(&mut s.phill_history,   (br.phill_voltage * 100.0) as u64);
-                        push_spark(&mut s.trust_history,   (br.voice_trust   * 100.0) as u64);
-                        push_spark(&mut s.id_history,      (br.combined_id   * 100.0) as u64);
-                        push_spark(&mut s.nova_broca_hist, br.nova_broca_spikes.min(32) * 3);
-                        push_spark(&mut s.sim_broca_hist,  br.simona_broca_spikes.min(32) * 3);
+                        push_spark(&mut s.phill_history,    (br.phill_voltage * 100.0) as u64);
+                        push_spark(&mut s.trust_history,    (br.voice_trust   * 100.0) as u64);
+                        push_spark(&mut s.id_history,       (br.combined_id   * 100.0) as u64);
+                        push_spark(&mut s.alpha_broca_hist, br.alpha_broca_spikes.min(32) * 3);
                         s.brain       = br;
                         s.total_ticks = tick;
                     });
@@ -97,6 +97,24 @@ pub fn brain_thread(
                                     s.thought_history.remove(0);
                                 }
                             }
+                        });
+                    }
+                }
+            }
+
+            // ── Poll proactive chat messages (rare; Alpha is reserved) ────
+            if let Ok(msgs) = brain.call_method0("get_proactive_messages") {
+                if let Ok(items) = msgs.extract::<Vec<(String, String)>>() {
+                    if !items.is_empty() {
+                        crate::update_state(&state, |s| {
+                            for (who, message) in &items {
+                                s.chat_history.push(ChatLine {
+                                    speaker: who.clone(),
+                                    text: message.clone(),
+                                    regions: vec![], story_mode: false, from_stt: false,
+                                });
+                            }
+                            trim_chat(&mut s.chat_history);
                         });
                     }
                 }
@@ -130,10 +148,8 @@ pub fn brain_thread(
                 if let Some(ref bridge) = *sr {
                     crate::update_state(&state, |s| {
                         s.stt.last_transcript   = bridge.last_text.clone();
-                        s.stt.wake_nova         = bridge.wake_nova;
-                        s.stt.wake_simona       = bridge.wake_simona;
-                        s.stt.nova_resp         = bridge.nova_resp;
-                        s.stt.simona_resp        = bridge.simona_resp;
+                        s.stt.wake_alpha        = bridge.wake_alpha;
+                        s.stt.alpha_resp        = bridge.alpha_resp;
                         s.stt.total_transcripts = bridge.count;
                         s.stt.listening         = bridge.listening;
                     });
@@ -174,11 +190,10 @@ pub fn brain_thread(
             }
 
             // ── Pace to 20 Hz ─────────────────────────────────────────────
-            // Release the GIL during the inter-tick sleep so Python-side
-            // personality threads (Nova, Simona) can advance their own loops.
-            // Without this, Python threads spawned inside brain.py would
-            // never get CPU time because Rust holds Python::with_gil for
-            // the entire brain-thread loop.
+            // Release the GIL during the inter-tick sleep so the Python-side
+            // Alpha personality thread can advance its own loop. Without this,
+            // Python threads spawned inside brain.py would never get CPU time
+            // because Rust holds Python::with_gil for the entire brain loop.
             let el     = t0.elapsed();
             let budget = Duration::from_millis(BRAIN_INTERVAL_MS);
             if el < budget { py.allow_threads(|| thread::sleep(budget - el)); }
@@ -189,12 +204,11 @@ pub fn brain_thread(
 fn dispatch_think_result(
     d:            &pyo3::Bound<'_, PyDict>,
     state:        &Arc<ArcSwap<SharedState>>,
-    story_active: bool,
+    _story_active: bool,
     tick:         u64,
     brain:        &pyo3::Bound<'_, PyAny>,
 ) {
-    let nova_t    = extract_str(d, "nova");
-    let simona_t  = extract_str(d, "simona");
+    let alpha_t   = extract_str(d, "alpha");
     let energy    = extract_f64(d, "energy");
     let gw        = extract_bool(d, "global_workspace");
     let tticks    = extract_u64(d, "think_ticks");
@@ -202,8 +216,7 @@ fn dispatch_think_result(
     let story_on  = extract_bool(d, "story_active");
     let act_reg: Vec<String> = d.get_item("active_regions").ok().flatten()
         .and_then(|v| v.extract().ok()).unwrap_or_default();
-    let nova_r    = extract_region_map(d, "nova_regions");
-    let simona_r  = extract_region_map(d, "simona_regions");
+    let alpha_r   = extract_region_map(d, "alpha_regions");
 
     let sem_ct: usize = brain.call_method0("introspect").ok()
         .and_then(|r| r.downcast::<PyDict>().ok()
@@ -215,22 +228,15 @@ fn dispatch_think_result(
         s.brain.active_regions   = act_reg.clone();
         s.brain.energy           = energy;
         s.brain.global_workspace = gw;
-        s.brain.nova_regions     = nova_r;
-        s.brain.simona_regions   = simona_r;
+        s.brain.alpha_regions    = alpha_r;
         s.brain.story_active     = story_on;
         s.brain.story_event      = story_ev.clone();
         s.brain.sem_concepts     = sem_ct;
 
-        if let Some(t) = nova_t {
+        if let Some(t) = alpha_t {
             s.chat_history.push(ChatLine {
-                speaker: "nova".into(), text: t,
+                speaker: "alpha".into(), text: t,
                 regions: act_reg.clone(), story_mode: story_on, from_stt: false,
-            });
-        }
-        if let Some(t) = simona_t {
-            s.chat_history.push(ChatLine {
-                speaker: "simona".into(), text: t,
-                regions: vec![], story_mode: story_on, from_stt: false,
             });
         }
         if gw {
@@ -259,6 +265,7 @@ fn dispatch_think_result(
         }
         trim_chat(&mut s.chat_history);
     });
+    let _ = tick;
 }
 
 // ── Result extractors ─────────────────────────────────────────────────────────
@@ -291,75 +298,48 @@ pub fn extract_step_result(d: &pyo3::Bound<'_, PyDict>, tick: u64) -> BrainResul
         tick,
         phill_voltage:        extract_f64(d, "phill_voltage"),
         phill_spiked:         extract_bool(d, "phill_spiked"),
-        nova_broca_spikes:    extract_u64(d, "nova_spikes"),
-        simona_broca_spikes:  extract_u64(d, "simona_spikes"),
-        nova_pfc_threshold:   extract_f64(d, "nova_threshold"),
-        simona_broca_thr:     extract_f64(d, "simona_threshold"),
-        nova_pfc_voltage:     extract_f64(d, "nova_mem_mean"),
-        simona_broca_voltage: extract_f64(d, "simona_mem_mean"),
+        alpha_broca_spikes:   extract_u64(d, "alpha_spikes"),
+        alpha_pfc_threshold:  extract_f64(d, "alpha_threshold"),
+        alpha_pfc_voltage:    extract_f64(d, "alpha_mem_mean"),
         speech_trigger:       extract_str(d, "speech_trigger"),
-        nova_tts_speaking:    extract_bool(d, "nova_tts_speaking"),
-        simona_tts_speaking:  extract_bool(d, "simona_tts_speaking"),
+        alpha_tts_speaking:   extract_bool(d, "alpha_tts_speaking"),
         active_regions:       vec![],
         energy:               0.0,
         global_workspace:     false,
         voice_trust:          extract_f64(d, "voice_trust"),
         voice_status:         extract_str(d, "voice_status").unwrap_or_else(|| "...".into()),
         phill_gain:           extract_f64(d, "phill_gain"),
-        nova_regions:         extract_region_map(d, "nova_regions"),
-        simona_regions:       extract_region_map(d, "simona_regions"),
+        alpha_regions:        extract_region_map(d, "alpha_regions"),
         sem_concepts:         0,
         combined_id:          extract_f64(d, "combined_id"),
         face_present:         extract_bool(d, "face_present"),
         imprint_status:       extract_str(d, "imprint_status").unwrap_or_else(|| "learning".into()),
         camera_active:        extract_bool(d, "camera_active"),
-        nova_vigilance:       extract_bool(d, "nova_vigilance"),
-        nova_pressure:        extract_f64(d, "nova_pressure"),
-        simona_pressure:      extract_f64(d, "simona_pressure"),
+        alpha_vigilance:      extract_bool(d, "alpha_vigilance"),
+        alpha_pressure:       extract_f64(d, "alpha_pressure"),
         story_active:         false,
         story_event:          None,
-        nova_babble_count:    extract_u64(d, "nova_babble_count"),
-        nova_bound_count:     extract_u64(d, "nova_bound_count"),
-        nova_motor_map_size:  extract_u64(d, "nova_motor_map_size"),
-        simona_babble_count:  extract_u64(d, "simona_babble_count"),
-        simona_bound_count:   extract_u64(d, "simona_bound_count"),
-        simona_motor_map_size:extract_u64(d, "simona_motor_map_size"),
-        nova_voice_esteem:    extract_f64_or(d, "nova_voice_esteem",     0.5),
-        simona_voice_esteem:  extract_f64_or(d, "simona_voice_esteem",   0.5),
-        nova_voice_surprise:  extract_f64_or(d, "nova_voice_surprise",   0.5),
-        simona_voice_surprise:extract_f64_or(d, "simona_voice_surprise", 0.5),
-        link_nova_to_simona:  extract_u64(d, "link_nova_to_simona"),
-        link_simona_to_nova:  extract_u64(d, "link_simona_to_nova"),
-        nova_da:        extract_f64_or(d, "nova_da",        0.45),
-        nova_ser:       extract_f64_or(d, "nova_ser",       0.75),
-        nova_gaba:      extract_f64_or(d, "nova_gaba",      0.45),
-        nova_arousal:   extract_f64_or(d, "nova_arousal",   0.0),
-        simona_da:      extract_f64_or(d, "simona_da",      0.60),
-        simona_ser:     extract_f64_or(d, "simona_ser",     0.40),
-        simona_gaba:    extract_f64_or(d, "simona_gaba",    0.35),
-        simona_arousal: extract_f64_or(d, "simona_arousal", 0.0),
-        nova_coord:     extract_f64_or(d, "nova_coord",     0.4),
-        simona_coord:   extract_f64_or(d, "simona_coord",   0.4),
+        alpha_babble_count:   extract_u64(d, "alpha_babble_count"),
+        alpha_bound_count:    extract_u64(d, "alpha_bound_count"),
+        alpha_motor_map_size: extract_u64(d, "alpha_motor_map_size"),
+        alpha_voice_esteem:   extract_f64_or(d, "alpha_voice_esteem",   0.5),
+        alpha_voice_surprise: extract_f64_or(d, "alpha_voice_surprise", 0.5),
+        alpha_da:        extract_f64_or(d, "alpha_da",        0.45),
+        alpha_ser:       extract_f64_or(d, "alpha_ser",       0.75),
+        alpha_gaba:      extract_f64_or(d, "alpha_gaba",      0.45),
+        alpha_arousal:   extract_f64_or(d, "alpha_arousal",   0.0),
+        alpha_coord:     extract_f64_or(d, "alpha_coord",     0.4),
         asleep:          extract_bool(d, "asleep"),
         sleep_pressure:  extract_f64_or(d, "sleep_pressure", 0.0),
-        nova_episodes:   extract_u64(d, "nova_episodes"),
-        simona_episodes: extract_u64(d, "simona_episodes"),
-        nova_ach:   extract_f64_or(d, "nova_ach",   0.50),
-        nova_ne:    extract_f64_or(d, "nova_ne",    0.40),
-        nova_oxy:   extract_f64_or(d, "nova_oxy",   0.30),
-        simona_ach: extract_f64_or(d, "simona_ach", 0.50),
-        simona_ne:  extract_f64_or(d, "simona_ne",  0.40),
-        simona_oxy: extract_f64_or(d, "simona_oxy", 0.30),
-        nova_feeling:          extract_str(d, "nova_feeling").unwrap_or_else(|| "calm".into()),
-        nova_feel_intensity:   extract_f64_or(d, "nova_feel_intensity", 0.0),
-        nova_valence:          extract_f64_or(d, "nova_valence", 0.5),
-        simona_feeling:        extract_str(d, "simona_feeling").unwrap_or_else(|| "calm".into()),
-        simona_feel_intensity: extract_f64_or(d, "simona_feel_intensity", 0.0),
-        simona_valence:        extract_f64_or(d, "simona_valence", 0.5),
-        nova_selfness:   extract_f64_or(d, "nova_selfness",   0.5),
-        nova_drift:      extract_f64_or(d, "nova_drift",      0.0),
-        simona_selfness: extract_f64_or(d, "simona_selfness", 0.5),
-        simona_drift:    extract_f64_or(d, "simona_drift",    0.0),
+        alpha_episodes:  extract_u64(d, "alpha_episodes"),
+        alpha_ach:   extract_f64_or(d, "alpha_ach",   0.50),
+        alpha_ne:    extract_f64_or(d, "alpha_ne",    0.40),
+        alpha_oxy:   extract_f64_or(d, "alpha_oxy",   0.30),
+        alpha_feeling:          extract_str(d, "alpha_feeling").unwrap_or_else(|| "calm".into()),
+        alpha_feel_intensity:   extract_f64_or(d, "alpha_feel_intensity", 0.0),
+        alpha_valence:          extract_f64_or(d, "alpha_valence", 0.5),
+        alpha_selfness:   extract_f64_or(d, "alpha_selfness",   0.5),
+        alpha_drift:      extract_f64_or(d, "alpha_drift",      0.0),
     }
 }
 

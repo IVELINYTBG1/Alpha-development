@@ -1,4 +1,4 @@
-// src/main.rs — Nova & Simona v0.5 · Lean Orchestrator
+// src/main.rs — Alpha v0.5 · Lean Orchestrator
 
 mod state;
 mod audio;
@@ -194,10 +194,10 @@ fn main() -> anyhow::Result<()> {
                                         .and_then(|v| v.extract())
                                         .unwrap_or(false);
 
-                                    let wake_nova   = addressed.as_deref()
-                                        .map(|a| a=="nova"||a=="both").unwrap_or(false);
-                                    let wake_simona = addressed.as_deref()
-                                        .map(|a| a=="simona"||a=="both").unwrap_or(false);
+                                    let wake_alpha   = addressed.as_deref()
+                                        .map(|a| a=="alpha"||a=="both").unwrap_or(false);
+                                    let wake_alpha = addressed.as_deref()
+                                        .map(|a| a=="alpha"||a=="both").unwrap_or(false);
 
                                     // Get familiarity score for TUI
                                     let familiarity: String = eng
@@ -212,13 +212,13 @@ fn main() -> anyhow::Result<()> {
 
                                     update_state(&s, |st| {
                                         st.stt.last_transcript   = text.clone();
-                                        st.stt.wake_nova         = wake_nova;
-                                        st.stt.wake_simona       = wake_simona;
+                                        st.stt.wake_alpha         = wake_alpha;
+                                        st.stt.wake_alpha       = wake_alpha;
                                         st.stt.total_transcripts += 1;
                                         st.stt.listening         = true;
-                                        // Re-use nova_resp field for familiarity
-                                        st.stt.nova_resp   = if wake_nova   { 0.9 } else { 0.3 };
-                                        st.stt.simona_resp = if wake_simona { 0.9 } else { 0.3 };
+                                        // Re-use alpha_resp field for familiarity
+                                        st.stt.alpha_resp   = if wake_alpha   { 0.9 } else { 0.3 };
+                                        st.stt.alpha_resp = if wake_alpha { 0.9 } else { 0.3 };
                                     });
 
                                     // Route to think() — STTEngine already
@@ -264,10 +264,10 @@ fn main() -> anyhow::Result<()> {
                                         (br.voice_trust*100.0) as u64);
                                     state::push_spark(&mut st.id_history,
                                         (br.combined_id*100.0) as u64);
-                                    state::push_spark(&mut st.nova_broca_hist,
-                                        br.nova_broca_spikes.min(32)*3);
+                                    state::push_spark(&mut st.alpha_broca_hist,
+                                        br.alpha_broca_spikes.min(32)*3);
                                     state::push_spark(&mut st.sim_broca_hist,
-                                        br.simona_broca_spikes.min(32)*3);
+                                        br.alpha_broca_spikes.min(32)*3);
                                     st.brain       = br;
                                     st.total_ticks = tick;
                                 });

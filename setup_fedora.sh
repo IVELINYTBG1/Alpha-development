@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup_fedora.sh — Nova & Simona v0.5 — Fedora Workstation 44 Setup
+# setup_fedora.sh — Alpha v0.5 — Fedora Workstation 44 Setup
 # ====================================================================
 # Run once after cloning/unzipping the project.
 # This script is idempotent — safe to run multiple times.
@@ -33,7 +33,7 @@ err()   { echo -e "${RED}[ERR ]${NC} $*"; exit 1; }
 
 echo ""
 echo -e "${CYN}╔══════════════════════════════════════════════╗${NC}"
-echo -e "${CYN}║   Nova & Simona v0.5 — Fedora 44 Setup      ║${NC}"
+echo -e "${CYN}║   Alpha v0.5 — Fedora 44 Setup      ║${NC}"
 echo -e "${CYN}╚══════════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -114,7 +114,7 @@ warn "  Place voice references in voices/ before running TTS"
 info "Creating .env file..."
 PYTHON_PATH=$(which python3)
 cat > .env << ENVEOF
-# Nova & Simona v0.5 — Environment
+# Alpha v0.5 — Environment
 # Source this before running: source .env
 
 export PYO3_PYTHON=${PYTHON_PATH}
@@ -130,10 +130,10 @@ ok ".env created — run 'source .env' before building"
 
 # ── 7. Voices directory ───────────────────────────────────────────────────────
 mkdir -p voices
-if [ ! -f voices/nova_reference.wav ]; then
+if [ ! -f voices/alpha_reference.wav ]; then
     info "voices/ created — add voice reference files:"
-    echo "    voices/nova_reference.wav   (10-30s clean speech)"
-    echo "    voices/simona_reference.wav (10-30s clean speech)"
+    echo "    voices/alpha_reference.wav   (10-30s clean speech)"
+    echo "    voices/alpha_reference.wav (10-30s clean speech)"
 fi
 
 # ── 8. Persistent data directories ───────────────────────────────────────────
@@ -161,10 +161,10 @@ else
 fi
 
 # ── 11. Build Rust binary ─────────────────────────────────────────────────────
-info "Building Nova & Simona (release mode)..."
+info "Building Alpha (release mode)..."
 source .env
 cargo build --release 2>&1 | tail -5
-ok "Build complete: ./target/release/nova_simona_core"
+ok "Build complete: ./target/release/alpha_core"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
@@ -172,10 +172,10 @@ echo -e "${GRN}╔════════════════════�
 echo -e "${GRN}║              Setup Complete!                 ║${NC}"
 echo -e "${GRN}╚══════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "Run Nova & Simona:"
+echo -e "Run Alpha:"
 echo -e "  ${CYN}source .env && cargo run --release${NC}"
 echo -e "  or"
-echo -e "  ${CYN}source .env && ./target/release/nova_simona_core${NC}"
+echo -e "  ${CYN}source .env && ./target/release/alpha_core${NC}"
 echo ""
 echo -e "First-time voice setup:"
 echo -e "  ${CYN}python tts_engine.py --download${NC}   # downloads XTTS v2 (~1.8GB)"
@@ -188,6 +188,6 @@ echo -e "  Enter  = send"
 echo -e "  Esc    = cancel"
 echo -e "  q      = quit"
 echo ""
-echo -e "In STT mode — say '${CYN}Nova${NC}' or '${CYN}Simona${NC}' to wake them."
+echo -e "In STT mode — say '${CYN}Alpha${NC}' or '${CYN}Alpha${NC}' to wake them."
 echo -e "They will recognize you over time. No hardcoding."
 echo ""

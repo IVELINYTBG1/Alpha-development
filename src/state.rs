@@ -1,7 +1,6 @@
 // src/state.rs — Shared Types
 // All data structures shared between audio, brain, TUI, and STT threads.
-
-use std::collections::VecDeque;
+// Single-brain (Alpha) build.
 
 // ── Input mode ────────────────────────────────────────────────────────────────
 
@@ -92,135 +91,97 @@ pub struct SttState {
     pub backend:          String,
     pub listening:        bool,
     pub last_transcript:  String,
-    pub wake_nova:        bool,   // name heard this tick
-    pub wake_simona:      bool,
-    pub nova_resp:        f64,    // responsiveness score [0,1]
-    pub simona_resp:      f64,
+    pub wake_alpha:       bool,   // name heard this tick
+    pub alpha_resp:       f64,    // responsiveness score [0,1]
     pub total_transcripts:u64,
     pub error:            Option<String>,
 }
 
-// ── Brain result ──────────────────────────────────────────────────────────────
+// ── Brain result (single brain: Alpha) ──────────────────────────────────────────
 
 #[derive(Clone, Debug)]
 pub struct BrainResult {
     pub tick:                 u64,
     pub phill_voltage:        f64,
     pub phill_spiked:         bool,
-    pub nova_broca_spikes:    u64,
-    pub simona_broca_spikes:  u64,
-    pub nova_pfc_threshold:   f64,
-    pub simona_broca_thr:     f64,
-    pub nova_pfc_voltage:     f64,
-    pub simona_broca_voltage: f64,
+    pub alpha_broca_spikes:   u64,
+    pub alpha_pfc_threshold:  f64,
+    pub alpha_pfc_voltage:    f64,
     pub speech_trigger:       Option<String>,
-    pub nova_tts_speaking:    bool,
-    pub simona_tts_speaking:  bool,
+    pub alpha_tts_speaking:   bool,
     pub active_regions:       Vec<String>,
     pub energy:               f64,
     pub global_workspace:     bool,
     pub voice_trust:          f64,
     pub voice_status:         String,
     pub phill_gain:           f64,
-    pub nova_regions:         Vec<(String, f64)>,
-    pub simona_regions:       Vec<(String, f64)>,
+    pub alpha_regions:        Vec<(String, f64)>,
     pub sem_concepts:         usize,
     pub combined_id:          f64,
     pub face_present:         bool,
     pub imprint_status:       String,
     pub camera_active:        bool,
-    pub nova_vigilance:       bool,
-    pub nova_pressure:        f64,
-    pub simona_pressure:      f64,
+    pub alpha_vigilance:      bool,
+    pub alpha_pressure:       f64,
     pub story_active:         bool,
     pub story_event:          Option<String>,
     // Babbling cortex counters
-    pub nova_babble_count:    u64,
-    pub nova_bound_count:     u64,
-    pub nova_motor_map_size:  u64,
-    pub simona_babble_count:  u64,
-    pub simona_bound_count:   u64,
-    pub simona_motor_map_size:u64,
-    // Vocal self-esteem — each personality's "do I like how I sound?" (0..1)
-    pub nova_voice_esteem:    f64,
-    pub simona_voice_esteem:  f64,
+    pub alpha_babble_count:   u64,
+    pub alpha_bound_count:    u64,
+    pub alpha_motor_map_size: u64,
+    // Vocal self-esteem — "do I like how I sound?" (0..1)
+    pub alpha_voice_esteem:   f64,
     // Predictive self-monitoring — "surprise" = forward-model prediction error (0..1)
-    pub nova_voice_surprise:  f64,
-    pub simona_voice_surprise:f64,
-    // Secure inter-personality link — pending message counts (content opaque to observer)
-    pub link_nova_to_simona:  u64,
-    pub link_simona_to_nova:  u64,
-    // Neurochemistry — dopamine / serotonin / GABA / amygdala arousal, per personality
-    pub nova_da:        f64,
-    pub nova_ser:       f64,
-    pub nova_gaba:      f64,
-    pub nova_arousal:   f64,
-    pub simona_da:      f64,
-    pub simona_ser:     f64,
-    pub simona_gaba:    f64,
-    pub simona_arousal: f64,
+    pub alpha_voice_surprise: f64,
+    // Neurochemistry — dopamine / serotonin / GABA / amygdala arousal
+    pub alpha_da:        f64,
+    pub alpha_ser:       f64,
+    pub alpha_gaba:      f64,
+    pub alpha_arousal:   f64,
     // Cerebellum — motor coordination/fluency (0..1, climbs as it learns)
-    pub nova_coord:     f64,
-    pub simona_coord:   f64,
+    pub alpha_coord:     f64,
     // Sleep / consolidation (Stage 3)
     pub asleep:         bool,
     pub sleep_pressure: f64,
-    pub nova_episodes:  u64,
-    pub simona_episodes:u64,
+    pub alpha_episodes: u64,
     // Stage 4 neuromodulators: acetylcholine / norepinephrine / oxytocin
-    pub nova_ach:   f64,
-    pub nova_ne:    f64,
-    pub nova_oxy:   f64,
-    pub simona_ach: f64,
-    pub simona_ne:  f64,
-    pub simona_oxy: f64,
-
-    // Core felt emotion (AffectCore readout): the named feeling, its strength
-    // [0,1], and valence [0,1] (0 = unpleasant, 0.5 = neutral, 1 = pleasant).
-    pub nova_feeling:          String,
-    pub nova_feel_intensity:   f64,
-    pub nova_valence:          f64,
-    pub simona_feeling:        String,
-    pub simona_feel_intensity: f64,
-    pub simona_valence:        f64,
-
-    // Personality drift (mechanism #4): how 'in character' each is right now
-    // (selfness 0..1) and how much that has grown this session (drift, +/-).
-    pub nova_selfness:   f64,
-    pub nova_drift:      f64,
-    pub simona_selfness: f64,
-    pub simona_drift:    f64,
+    pub alpha_ach:   f64,
+    pub alpha_ne:    f64,
+    pub alpha_oxy:   f64,
+    // Core felt emotion (AffectCore readout): named feeling, strength [0,1],
+    // valence [0,1] (0 = unpleasant, 0.5 = neutral, 1 = pleasant).
+    pub alpha_feeling:          String,
+    pub alpha_feel_intensity:   f64,
+    pub alpha_valence:          f64,
+    // Personality drift: how 'in character' Alpha is now (selfness 0..1) and
+    // how much that has grown this session (drift, +/-).
+    pub alpha_selfness:   f64,
+    pub alpha_drift:      f64,
 }
 
 impl Default for BrainResult {
     fn default() -> Self {
         Self {
             tick:0, phill_voltage:0.0, phill_spiked:false,
-            nova_broca_spikes:0, simona_broca_spikes:0,
-            nova_pfc_threshold:1.4, simona_broca_thr:0.38,
-            nova_pfc_voltage:0.0, simona_broca_voltage:0.0,
-            speech_trigger:None, nova_tts_speaking:false, simona_tts_speaking:false,
+            alpha_broca_spikes:0,
+            alpha_pfc_threshold:1.4,
+            alpha_pfc_voltage:0.0,
+            speech_trigger:None, alpha_tts_speaking:false,
             active_regions:vec![], energy:0.0, global_workspace:false,
             voice_trust:0.0, voice_status:"listening\u{2026}".into(), phill_gain:0.7,
-            nova_regions:vec![], simona_regions:vec![], sem_concepts:0,
+            alpha_regions:vec![], sem_concepts:0,
             combined_id:0.0, face_present:false, imprint_status:"learning".into(),
-            camera_active:false, nova_vigilance:false, nova_pressure:0.0,
-            simona_pressure:0.0, story_active:false, story_event:None,
-            nova_babble_count:0, nova_bound_count:0, nova_motor_map_size:0,
-            simona_babble_count:0, simona_bound_count:0, simona_motor_map_size:0,
-            nova_voice_esteem:0.5, simona_voice_esteem:0.5,
-            nova_voice_surprise:0.5, simona_voice_surprise:0.5,
-            link_nova_to_simona:0, link_simona_to_nova:0,
+            camera_active:false, alpha_vigilance:false, alpha_pressure:0.0,
+            story_active:false, story_event:None,
+            alpha_babble_count:0, alpha_bound_count:0, alpha_motor_map_size:0,
+            alpha_voice_esteem:0.5, alpha_voice_surprise:0.5,
             // Neurochemistry baselines (match brain.py Neuromodulators init)
-            nova_da:0.45, nova_ser:0.75, nova_gaba:0.45, nova_arousal:0.0,
-            simona_da:0.60, simona_ser:0.40, simona_gaba:0.35, simona_arousal:0.0,
-            nova_coord:0.4, simona_coord:0.4,
-            asleep:false, sleep_pressure:0.0, nova_episodes:0, simona_episodes:0,
-            nova_ach:0.50, nova_ne:0.40, nova_oxy:0.30,
-            simona_ach:0.50, simona_ne:0.40, simona_oxy:0.30,
-            nova_feeling:"calm".into(),   nova_feel_intensity:0.0,   nova_valence:0.5,
-            simona_feeling:"calm".into(), simona_feel_intensity:0.0, simona_valence:0.5,
-            nova_selfness:0.5, nova_drift:0.0, simona_selfness:0.5, simona_drift:0.0,
+            alpha_da:0.45, alpha_ser:0.75, alpha_gaba:0.45, alpha_arousal:0.0,
+            alpha_coord:0.4,
+            asleep:false, sleep_pressure:0.0, alpha_episodes:0,
+            alpha_ach:0.50, alpha_ne:0.40, alpha_oxy:0.30,
+            alpha_feeling:"calm".into(), alpha_feel_intensity:0.0, alpha_valence:0.5,
+            alpha_selfness:0.5, alpha_drift:0.0,
         }
     }
 }
@@ -229,7 +190,7 @@ impl Default for BrainResult {
 
 #[derive(Clone, Debug)]
 pub struct SearchEvent {
-    pub speaker:   String,   // "nova" | "simona"
+    pub speaker:   String,   // "alpha"
     pub query:     String,
     pub snippet:   String,
     pub timestamp: String,   // "HH:MM:SS" local time when ingested
@@ -254,8 +215,7 @@ pub struct SharedState {
     pub phill_history:    Vec<u64>,
     pub trust_history:    Vec<u64>,
     pub id_history:       Vec<u64>,
-    pub nova_broca_hist:  Vec<u64>,
-    pub sim_broca_hist:   Vec<u64>,
+    pub alpha_broca_hist: Vec<u64>,
     pub total_ticks:      u64,
     pub error_msg:        Option<String>,
     // Chat panels
@@ -280,13 +240,12 @@ impl Default for SharedState {
             phill_history:   vec![0u64; SPARKLINE_LEN],
             trust_history:   vec![0u64; SPARKLINE_LEN],
             id_history:      vec![0u64; SPARKLINE_LEN],
-            nova_broca_hist: vec![0u64; SPARKLINE_LEN],
-            sim_broca_hist:  vec![0u64; SPARKLINE_LEN],
+            alpha_broca_hist:vec![0u64; SPARKLINE_LEN],
             total_ticks:0, error_msg:None,
             chat_history: vec![
-                ChatLine::system("Nova & Simona v0.5 -- CPU-native -- 13 anatomical regions"),
+                ChatLine::system("Alpha v0.5 -- CPU-native neuromorphic SNN -- 7 cortical regions"),
                 ChatLine::system("TAB = switch TEXT/STT mode  |  i = type  |  q = quit"),
-                ChatLine::system("In STT: say 'Nova' or 'Simona' to wake them. They learn over time."),
+                ChatLine::system("In STT: say 'Alpha' to wake him. He learns over time."),
             ],
             thought_history: vec![],
             search_history: vec![],

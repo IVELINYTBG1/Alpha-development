@@ -31,7 +31,7 @@ rustflags = [
 # so an explicit `source .env` still wins. The API key stays OUT of here — it
 # lives only in the gitignored .env and is loaded at runtime by main.rs.
 [env]
-PYO3_PYTHON = "/home/nodevortex/Nova_Simona_Core/.venv-3.11/bin/python"
+PYO3_PYTHON = "/home/nodevortex/Alpha_deveopment/.venv-3.11/bin/python"
 
 # Convenience: `cargo start` == optimized run with everything wired in.
 # (Plain `cargo run` also works — the binary self-loads .env at startup and

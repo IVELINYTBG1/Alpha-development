@@ -10,14 +10,14 @@ Backend: Coqui XTTS v2 (local, offline, no API key)
 VOICE SETUP (do this once):
   1. Record 10–30 seconds of clean speech as a .wav file (16kHz+ mono/stereo)
   2. Place it at:
-       voices/nova_reference.wav    ← Nova's voice
-       voices/simona_reference.wav  ← Simona's voice
+       voices/alpha_reference.wav    ← Alpha's voice
+       voices/alpha_reference.wav  ← Alpha's voice
   3. Run once to trigger XTTS model download (~1.8 GB):
        python tts_engine.py --download
 
 LANGUAGES:
   XTTS v2 supports 17 languages including Bulgarian (bg) and English (en).
-  Set NOVA_LANG / SIMONA_LANG below to match the reference recording language.
+  Set ALPHA_LANG below to match the reference recording language.
 
 FALLBACK:
   If TTS or torch is not installed, SilentTTS is used — logs to console,
@@ -40,11 +40,9 @@ from typing import Optional, Literal
 # ── Config ────────────────────────────────────────────────────────────────────
 
 VOICES_DIR     = Path(__file__).parent / "voices"
-NOVA_REF       = VOICES_DIR / "nova_reference.wav"
-SIMONA_REF     = VOICES_DIR / "simona_reference.wav"
+ALPHA_REF       = VOICES_DIR / "alpha_reference.wav"
 
-NOVA_LANG      = "en"   # change to "bg" for Bulgarian
-SIMONA_LANG    = "en"   # change to "bg" for Bulgarian
+ALPHA_LANG      = "en"   # change to "bg" for Bulgarian
 
 MODEL_NAME     = "tts_models/multilingual/multi-dataset/xtts_v2"
 
@@ -54,7 +52,7 @@ SAMPLE_RATE    = 24000
 # Maximum queue depth — if brain is speaking faster than TTS renders, drop oldest
 QUEUE_MAX      = 4
 
-Speaker = Literal["nova", "simona"]
+Speaker = Literal["alpha", "alpha"]
 
 
 # ── Speech request ─────────────────────────────────────────────────────────────
@@ -82,15 +80,15 @@ class XTTSBackend:
         self._error_msg: Optional[str] = None
 
         # Pre-validate reference files before loading the heavy model
-        if not NOVA_REF.exists():
+        if not ALPHA_REF.exists():
             self._error_msg = (
-                f"Nova reference voice not found at {NOVA_REF}\n"
-                f"Record 10–30s of clean speech and save as nova_reference.wav"
+                f"Alpha reference voice not found at {ALPHA_REF}\n"
+                f"Record 10–30s of clean speech and save as alpha_reference.wav"
             )
-        if not SIMONA_REF.exists():
+        if not ALPHA_REF.exists():
             msg = (
-                f"Simona reference voice not found at {SIMONA_REF}\n"
-                f"Record 10–30s of clean speech and save as simona_reference.wav"
+                f"Alpha reference voice not found at {ALPHA_REF}\n"
+                f"Record 10–30s of clean speech and save as alpha_reference.wav"
             )
             self._error_msg = (self._error_msg + "\n" + msg) if self._error_msg else msg
 
@@ -129,8 +127,8 @@ class XTTSBackend:
             print(f"[TTS] Skipping synthesis: {self._error_msg}")
             return None
 
-        ref_wav = str(NOVA_REF if req.speaker == "nova" else SIMONA_REF)
-        lang    = NOVA_LANG   if req.speaker == "nova" else SIMONA_LANG
+        ref_wav = str(ALPHA_REF)
+        lang    = ALPHA_LANG
 
         try:
             # tts_to_file writes a .wav; tts() returns raw waveform list
@@ -177,8 +175,8 @@ class TTSEngine:
         engine = TTSEngine()
         engine.start()
 
-        engine.speak("Hello, I am Nova.", speaker="nova")
-        engine.speak("Хей! Чуваш ли ме?", speaker="simona")
+        engine.speak("Hello, I am Alpha.", speaker="alpha")
+        engine.speak("Хей! Чуваш ли ме?", speaker="alpha")
 
         engine.stop()
     """
@@ -214,7 +212,7 @@ class TTSEngine:
             self._worker.join(timeout=2.0)
         print("[TTS] Engine stopped")
 
-    def speak(self, text: str, speaker: Speaker = "nova", language: str = "en") -> bool:
+    def speak(self, text: str, speaker: Speaker = "alpha", language: str = "en") -> bool:
         """
         Enqueue a speech request. Non-blocking.
 
@@ -298,7 +296,7 @@ class SilentTTS:
     def start(self): pass
     def stop(self):  pass
     def is_speaking(self) -> bool: return False
-    def speak(self, text: str, speaker: str = "nova", language: str = "en") -> bool:
+    def speak(self, text: str, speaker: str = "alpha", language: str = "en") -> bool:
         print(f"[SILENT TTS] {speaker.upper()}: {text}")
         return True
     ready = False
@@ -334,8 +332,8 @@ if __name__ == "__main__":
         print("Download complete. Place reference .wav files in voices/ and run the main app.")
     elif "--test" in sys.argv:
         engine = create_engine()
-        engine.speak("Nova online. Auditory cortex active.", speaker="nova")
-        engine.speak("Симона тук! Готова съм!", speaker="simona", language="bg")
+        engine.speak("Alpha online. Auditory cortex active.", speaker="alpha")
+        engine.speak("Симона тук! Готова съм!", speaker="alpha", language="bg")
         time.sleep(30)  # wait for playback
         engine.stop()
     else:

@@ -1,4 +1,4 @@
-# Nova & Simona v0.5 — Python Dependencies
+# Alpha v0.5 — Python Dependencies
 # Install: pip install -r requirements.txt
 # Fedora 44: use python3 -m pip install --user -r requirements.txt
 

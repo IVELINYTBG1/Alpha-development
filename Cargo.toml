@@ -1,10 +1,10 @@
 [package]
-name    = "nova_simona_core"
+name    = "alpha_core"
 version = "0.5.0"
 edition = "2021"
 
 [[bin]]
-name = "nova_simona_core"
+name = "alpha_core"
 path = "src/main.rs"
 
 [dependencies]
@@ -24,7 +24,7 @@ arc-swap = "1.7"
 # Error handling
 anyhow = "1.0"
 
-# Random (for Simona stochastic resonance fallback)
+# Random (for stochastic resonance fallback)
 rand       = "0.8"
 rand_distr = "0.4"
 
@@ -51,7 +51,7 @@ panic         = "abort"
 # Run:
 #   cargo run --release
 #   # or directly:
-#   ./target/release/nova_simona_core
+#   ./target/release/alpha_core
 #
 # Audio on Fedora 44 (PipeWire):
 #   CPAL uses PipeWire via ALSA compatibility layer automatically.

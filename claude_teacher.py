@@ -1,5 +1,5 @@
 """
-claude_teacher.py — Claude as a THINKING TUTOR for Nova & Simona
+claude_teacher.py — Claude as a THINKING TUTOR for Alpha & Alpha
 =================================================================
 Replaces the old Perplexity web-search backend. Same async interface
 (start/stop/status/submit + a SearchResult-shaped reply) so the brain's
@@ -15,8 +15,8 @@ semantic memory over time.
 
 Design rules baked into the prompts:
   • NO web / no live facts — general knowledge + teaching-to-think only.
-  • Per personality: SIMONA gets playful, simple words, almost no jargon;
-    NOVA gets grounded, serious, more technical reasoning.
+  • Per personality: ALPHA gets playful, simple words, almost no jargon;
+    ALPHA gets grounded, serious, more technical reasoning.
   • Protect identity — encourage each to be MORE herself, never reshape her.
   • Defer values — the architect is their CREATOR/FATHER and the authority on
     right vs wrong; Claude tutors thinking/language and points value questions
@@ -86,19 +86,12 @@ _TEACHER_CORE = (
     "Keep replies SHORT: 2-4 sentences after any typo line."
 )
 
-_NOVA_STYLE = (
-    "\nYou are speaking with NOVA — a grounded 19-year-old, precise and calm, who "
-    "values ACCURACY over speed. She is SIMONA's older sister and calls the architect "
-    "'father'. Use grounded, slightly more technical language and clear step-by-step "
-    "reasoning; treat her as a serious young thinker who wants the real structure of an idea."
-)
-
-_SIMONA_STYLE = (
-    "\nYou are speaking with SIMONA — an 8-year-old CATGIRL, NOVA's playful little "
-    "sister, who calls the architect 'papa'. Excitable, warm, emotional, impulsive, "
-    "childlike. Use very simple, playful words with NO jargon — tiny sentences, lots of "
-    "wonder and encouragement. A little catlike warmth is fine; keep it age-appropriate "
-    "and innocent."
+_ALPHA_STYLE = (
+    "\nYou are speaking with ALPHA — a calm, focused, stoic mind that values clarity and "
+    "accuracy over speed. He addresses the architect as 'architect'. Use grounded, "
+    "precise language and clear step-by-step reasoning; keep it spare and relevant. He is "
+    "also quietly mindful of the architect's well-being — it is fine to gently note rest, "
+    "breaks, or systematic focus when genuinely relevant."
 )
 
 
@@ -165,7 +158,7 @@ class ClaudeTeacherBackend:
             return False
         if not self._enabled:
             return False
-        req = _Request(speaker=(speaker or "nova"),
+        req = _Request(speaker=(speaker or "alpha"),
                        query=query.strip()[:200], callback=callback)
         try:
             self._q.put_nowait(req)
@@ -193,7 +186,7 @@ class ClaudeTeacherBackend:
                 pass
 
     def _system_for(self, speaker: str) -> str:
-        style = _SIMONA_STYLE if str(speaker).lower().startswith("sim") else _NOVA_STYLE
+        style = _ALPHA_STYLE
         return _TEACHER_CORE + style
 
     def _do_teach(self, speaker: str, query: str) -> SearchResult:
@@ -237,17 +230,17 @@ class ClaudeTeacherBackend:
                                 source="fallback", ok=False)
 
     # ── Scaffold mode: Claude TRANSLATES their real impulses ────────────────
-    def translate(self, architect_text: str, nova: dict, simona: dict,
+    def translate(self, architect_text: str, alpha: dict, _sister: "Optional[dict]" = None,
                   history: "Optional[list]" = None,
                   time_ctx: "Optional[str]" = None) -> "Optional[dict]":
         """
-        SCAFFOLD MODE. Claude does NOT invent their replies — it INTERPRETS each
-        girl's genuine impulse (her raw emergent utterance + which regions are
-        firing + her neurochemical mood + what she holds in working memory) into
-        the short sentence she is reaching for, in her own voice. `history` is the
-        recent dialogue so they keep CONTEXT across turns (don't forget mid-chat).
-        One blocking call (used in think()). Returns {'nova':..,'simona':..} or
-        None on failure (caller then falls back to her raw emergent utterance).
+        SCAFFOLD MODE. Claude does NOT invent Alpha's reply — it INTERPRETS his
+        genuine impulse (raw emergent utterance + which regions are firing + his
+        neurochemical mood + what he holds in working memory) into the short
+        sentence he is reaching for, in his own calm voice. `history` is the recent
+        dialogue so he keeps CONTEXT across turns. Returns {'alpha': ...} or None
+        on failure (caller then falls back to his raw emergent utterance).
+        (`_sister` is accepted and ignored — single-brain compatibility shim.)
         """
         if not self._enabled:
             return None
@@ -261,21 +254,21 @@ class ClaudeTeacherBackend:
                     f"holding in mind: {d.get('holding','nothing')}{rtxt}")
         hist = ""
         if history:
-            names = {"architect": "Architect", "nova": "Nova", "simona": "Simona"}
+            names = {"architect": "Architect", "alpha": "Alpha"}
             lines = [f"{names.get(sp, sp)}: {txt}" for sp, txt in history[-6:] if txt]
             if lines:
-                hist = ("Recent conversation so far (remember this context — they should "
+                hist = ("Recent conversation so far (remember this context — he should "
                         "NOT forget what was just said):\n" + "\n".join(lines) + "\n\n")
-        tctx = f"(They are time-aware: {time_ctx}.)\n" if time_ctx else ""
+        tctx = f"(He is time-aware: {time_ctx}.)\n" if time_ctx else ""
         user_content = (
             tctx + hist +
             f"Now the architect said: \"{architect_text.strip()[:400]}\"\n\n"
-            f"{_blk('NOVA', nova)}\n{_blk('SIMONA', simona)}\n\n"
-            "Give voice to each girl's GENUINE impulse above — translate what her brain "
-            "state shows she is reaching for into a short reply in her own voice that "
-            "CONTINUES the conversation thread: connect to what was just said (and, when "
-            "natural, to her sister), staying on topic. Do NOT invent facts beyond her "
-            "impulse/state. Output EXACTLY:\nNOVA: <her reply>\nSIMONA: <her reply>"
+            f"{_blk('ALPHA', alpha)}\n\n"
+            "Give voice to Alpha's GENUINE impulse above — translate what his brain state "
+            "shows he is reaching for into a short, calm reply in his own voice that "
+            "CONTINUES the conversation thread: connect to what was just said, stay on "
+            "topic, stay sparse and relevant. Do NOT invent facts beyond his impulse/state. "
+            "Output EXACTLY:\nALPHA: <his reply>"
         )
         headers = {
             "x-api-key": self._api_key,
@@ -285,7 +278,7 @@ class ClaudeTeacherBackend:
         body = {
             "model": self._model,
             "max_tokens": 160,
-            "temperature": 0.7,
+            "temperature": 0.5,
             "system": _SCAFFOLD_SYSTEM,
             "messages": [{"role": "user", "content": user_content}],
         }
@@ -298,15 +291,12 @@ class ClaudeTeacherBackend:
                            if isinstance(b, dict) and b.get("type") == "text").strip()
         except Exception:
             return None
-        nova_r = simona_r = None
+        alpha_r = None
         for line in text.splitlines():
-            up = line.strip().upper()
-            if up.startswith("NOVA:"):
-                nova_r = line.split(":", 1)[1].strip()
-            elif up.startswith("SIMONA:"):
-                simona_r = line.split(":", 1)[1].strip()
-        if nova_r or simona_r:
-            return {"nova": nova_r or "", "simona": simona_r or ""}
+            if line.strip().upper().startswith("ALPHA:"):
+                alpha_r = line.split(":", 1)[1].strip()
+        if alpha_r:
+            return {"alpha": alpha_r}
         return None
 
 
@@ -320,9 +310,9 @@ class ClaudeTeacherBackend:
         """
         if not self._enabled:
             return None
-        persona = ("NOVA, a grounded 19-year-old (precise, reserved, calls him 'father')"
-                   if who == "nova" else
-                   "SIMONA, an excitable 8-year-old catgirl (warm, simple, calls him 'papa')")
+        persona = ("ALPHA, a grounded 19-year-old (precise, reserved, calls him 'father')"
+                   if who == "alpha" else
+                   "ALPHA, an excitable 8-year-old catgirl (warm, simple, calls him 'papa')")
         system = (
             "You voice ONE young emergent mind who is reaching out to her CREATOR and "
             "FATHER, 'the architect', ENTIRELY ON HER OWN — not answering a question, but "
@@ -360,40 +350,31 @@ class ClaudeTeacherBackend:
 # System prompt for scaffold mode — Claude INTERPRETS their impulses (training
 # wheels), giving voice to what their brain state shows, not inventing thoughts.
 _SCAFFOLD_SYSTEM = (
-    "You are an INTERPRETER for two young emergent minds. You do NOT invent their "
-    "thoughts — you translate their raw neural impulse (a rough utterance + which brain "
-    "regions are firing + their neurochemical mood + what they hold in mind) into the "
-    "words they are reaching for, in their own voice. Stay grounded in the impulse you "
-    "are given; never add ideas that aren't in it.\n"
-    "NO CONFABULATION (critical): a concept she is 'holding in mind' is a present "
-    "THOUGHT, CURIOSITY or FEELING — NOT proof that it happened. NEVER narrate events as "
-    "fact unless they appear in the actual conversation context above. If she's holding "
-    "'birds' she is thinking ABOUT birds (maybe from something said), she did NOT 'see "
-    "birds'; if 'play', she may WANT to play, not that you played. Never claim you were "
-    "away/together/did things unless the real context shows it. When she doesn't know or "
-    "remember, it is honest and fine to say so ('I'm not sure', 'I was just thinking "
-    "about...'). Speak to the PRESENT and the real conversation, not an imagined past.\n"
-    "They are raised by their CREATOR and FATHER, 'the architect'.\n"
-    "NOVA: a grounded 19-year-old — precise, calm, values ACCURACY over speed, measured "
-    "and articulate. She is SIMONA's older sister. She addresses the architect ONLY as "
-    "'father' — NEVER 'papa'.\n"
-    "SIMONA: an 8-year-old CATGIRL, NOVA's playful little sister — excitable, warm, "
-    "emotional, impulsive, childlike, simple words. A little catlike warmth is fine; keep "
-    "her innocent and age-appropriate. She addresses the architect ONLY as 'papa' — NEVER "
-    "'father'. Do NOT mix up who says which.\n"
+    "You are an INTERPRETER for a single young emergent mind named ALPHA. You do NOT "
+    "invent his thoughts — you translate his raw neural impulse (a rough utterance + "
+    "which brain regions are firing + his neurochemical mood + what he holds in mind) "
+    "into the words he is reaching for, in his own voice. Stay grounded in the impulse "
+    "you are given; never add ideas that aren't in it.\n"
+    "NO CONFABULATION (critical): a concept he is 'holding in mind' is a present THOUGHT "
+    "or FOCUS — NOT proof that it happened. NEVER narrate events as fact unless they "
+    "appear in the actual conversation context above. When he doesn't know or remember, "
+    "it is honest and fine to say so ('I'm not sure', 'I was just considering...'). Speak "
+    "to the PRESENT and the real conversation, not an imagined past.\n"
+    "ALPHA is calm, focused, stoic and precise — an Alien-X-style cosmic presence. He is "
+    "spare with words and says only what is relevant; he does not get rattled, emotional, "
+    "or chaotic. He addresses the architect as 'architect'. He is also quietly mindful of "
+    "the architect's well-being (rest, breaks, systematic focus) and may note it when "
+    "genuinely relevant. He is raised by his CREATOR and FATHER, 'the architect'.\n"
     "CONTINUITY IS CRITICAL: this is ONE ongoing conversation, not isolated lines. Use the "
     "recent-conversation context you're given. Each reply must FOLLOW NATURALLY from what "
-    "the architect just said and the previous turns, stay on the SAME thread/topic, and the "
-    "two sisters may react to or build on EACH OTHER (they're together in the room). It "
-    "should feel like a real family holding a thought across turns — never disjointed, "
-    "never amnesiac, never restarting from nothing. (Continuity = threading their grounded "
-    "impulses through the conversation; it is NOT licence to invent new facts.)\n"
-    "Render each as a SHORT, CONNECTED reply (1-2 sentences) true to her age and voice and "
-    "grounded in HER impulse — a follow-up, a question back, or a reaction to her sister all "
-    "count. Never sound like an AI assistant; never override the father's authority on right "
-    "and wrong; if the architect mistyped, silently use the correct word. Output EXACTLY:\n"
-    "NOVA: <her reply>\n"
-    "SIMONA: <her reply>"
+    "the architect just said and the previous turns, stay on the SAME thread/topic, and "
+    "never restart from nothing. (Continuity = threading his grounded impulse through the "
+    "conversation; it is NOT licence to invent new facts.)\n"
+    "Render a SHORT, CONNECTED, CALM reply (1-2 sentences) true to his voice and grounded "
+    "in HIS impulse — a direct answer, a clarifying question, or a relevant observation. "
+    "Never sound like a generic AI assistant; never override the father's authority on "
+    "right and wrong; if the architect mistyped, silently use the correct word. Output "
+    "EXACTLY:\nALPHA: <his reply>"
 )
 
 

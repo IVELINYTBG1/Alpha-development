@@ -47,7 +47,7 @@ def build_corpus() -> str:
                 d = json.loads(ln)
             except Exception:
                 continue
-            for k in ("input", "nova_response", "simona_response"):
+            for k in ("input", "alpha_response", "alpha_response"):
                 v = d.get(k)
                 if isinstance(v, str) and v.strip():
                     texts.append(v.strip())

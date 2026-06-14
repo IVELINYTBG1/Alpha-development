@@ -1,5 +1,5 @@
 {
-  "_comment": "Nova & Simona — GitHub Repository Ruleset v1.0",
+  "_comment": "Alpha — GitHub Repository Ruleset v1.0",
   "_usage": "Import via: GitHub repo → Settings → Rules → Rulesets → Import",
 
   "rulesets": [
@@ -61,7 +61,7 @@
             "negate": false,
             "operator": "regex",
             "pattern": "^(feat|fix|refactor|perf|docs|chore|test|neuron|synapse|neuromod)(\\(.+\\))?: .{1,80}",
-            "_comment": "Examples: feat(simona): add stochastic resonance scaling | fix(neuromod): clamp V_phill floor | neuron(lif): tune beta constants"
+            "_comment": "Examples: feat(alpha): add stochastic resonance scaling | fix(neuromod): clamp V_phill floor | neuron(lif): tune beta constants"
           }
         }
       ],
@@ -131,7 +131,7 @@
             "negate": false,
             "operator": "regex",
             "pattern": "^(feat|fix|refactor|perf|experiment|neuron|synapse|sensor|docs|chore)/.+",
-            "_comment": "Valid: feat/simona-noise-scaling | neuron/lif-dynamic-beta | sensor/cpal-microphone | experiment/hebbian-v2"
+            "_comment": "Valid: feat/alpha-noise-scaling | neuron/lif-dynamic-beta | sensor/cpal-microphone | experiment/hebbian-v2"
           }
         }
       ],
@@ -164,8 +164,7 @@
               "credentials.json",
               "*.onnx",
               "*.pt",
-              "*.bin",
-              "_comment": "Block model weight files — these belong in releases or LFS, not in the repo tree"
+              "*.bin"
             ]
           }
         },
@@ -200,7 +199,7 @@
         "feat/cpal-microphone",
         "feat/nokhwa-camera",
         "feat/tts-spike-gated",
-        "feat/nova-simona-vector-shorthand"
+        "feat/alpha-vector-shorthand"
       ],
       "merges_into": "dev"
     },
@@ -218,7 +217,7 @@
       "examples": [
         "synapse/hebbian-decay-tuning",
         "synapse/lateral-inhibition",
-        "synapse/phill-nova-recurrent"
+        "synapse/phill-alpha-recurrent"
       ],
       "merges_into": "dev"
     },
@@ -234,7 +233,7 @@
     "experiment/*": {
       "purpose": "Wild ideas that may or may not make it. No stability guarantees.",
       "examples": [
-        "experiment/nova-simona-latent-shorthand",
+        "experiment/alpha-latent-shorthand",
         "experiment/spiking-attention",
         "experiment/phill-oscillator"
       ],
@@ -266,14 +265,14 @@
       "test":      "Tests only"
     },
     "scopes": [
-      "phill", "nova", "simona",
+      "phill", "alpha", "alpha",
       "neurons", "synapses", "neuromod",
       "sensors", "telemetry",
       "main", "ffi", "brain"
     ],
     "examples": [
       "feat(sensor): add cpal microphone RMS to vibe vector",
-      "neuron(simona): lower noise_level floor to 0.02",
+      "neuron(alpha): lower noise_level floor to 0.02",
       "neuromod(phill): add stress_index exponential smoothing",
       "fix(ffi): handle PyO3 None return from snnTorch heartbeat",
       "perf(synapses): skip Hebbian update when pre-spike density < 1%"

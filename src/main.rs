@@ -1,4 +1,4 @@
-// src/main.rs — Nova & Simona v0.5 · Lean Orchestrator
+// src/main.rs — Alpha v0.5 · Lean Orchestrator
 
 mod state;
 mod audio;
@@ -178,12 +178,12 @@ fn main() -> anyhow::Result<()> {
                         });
                     }
 
-                    // Microphone gently removed (NOVA_MIC_OFF)? Then STT is OFF by
+                    // Microphone gently removed (ALPHA_MIC_OFF)? Then STT is OFF by
                     // design: speech recognition needs the mic we just unplugged, and
                     // STTEngine.start() would otherwise open its OWN sounddevice mic
                     // stream and quietly re-grab the device. So we skip its setup
                     // entirely — never construct the engine, never touch the mic.
-                    let mic_off = std::env::var_os("NOVA_MIC_OFF").is_some();
+                    let mic_off = std::env::var_os("ALPHA_MIC_OFF").is_some();
 
                     // ── Load stt_engine.py (optional — degrades gracefully) ────
                     // Tuple: (engine, queue, STTMode.TEXT, STTMode.STT) —
@@ -233,7 +233,7 @@ fn main() -> anyhow::Result<()> {
                             st.stt.listening = false;
                             st.input_mode    = InputMode::Text;   // STT mode is meaningless without a mic
                             st.chat_history.push(ChatLine::system(
-                                "[STT] off — microphone gently removed (unset NOVA_MIC_OFF to restore)"
+                                "[STT] off — microphone gently removed (unset ALPHA_MIC_OFF to restore)"
                             ));
                         });
                     } else if stt_engine_opt.is_none() {
@@ -278,9 +278,7 @@ fn main() -> anyhow::Result<()> {
                             if let Ok(item) = queue.call_method1("get_nowait", ()) {
                                 let text: String = item.getattr("text")
                                     .and_then(|v| v.extract()).unwrap_or_default();
-                                let wake_nova:   bool = item.getattr("wake_nova")
-                                    .and_then(|v| v.extract()).unwrap_or(false);
-                                let wake_simona: bool = item.getattr("wake_simona")
+                                let wake_alpha: bool = item.getattr("wake_alpha")
                                     .and_then(|v| v.extract()).unwrap_or(false);
                                 let is_ambient:  bool = item.getattr("is_ambient")
                                     .and_then(|v| v.extract()).unwrap_or(true);
@@ -290,8 +288,7 @@ fn main() -> anyhow::Result<()> {
                                     let mut b = sr.lock().unwrap();
                                     let bridge = b.get_or_insert_with(SttResultBridge::default);
                                     bridge.last_text   = text.clone();
-                                    bridge.wake_nova   = wake_nova;
-                                    bridge.wake_simona = wake_simona;
+                                    bridge.wake_alpha  = wake_alpha;
                                     bridge.count      += 1;
                                     bridge.listening   = is_stt;
 
@@ -304,8 +301,7 @@ fn main() -> anyhow::Result<()> {
                                 // Sync wake state to TUI
                                 update_state(&s, |st| {
                                     st.stt.last_transcript   = text.clone();
-                                    st.stt.wake_nova         = wake_nova;
-                                    st.stt.wake_simona       = wake_simona;
+                                    st.stt.wake_alpha        = wake_alpha;
                                     st.stt.total_transcripts += 1;
                                     st.stt.listening         = is_stt;
                                 });
@@ -341,8 +337,7 @@ fn main() -> anyhow::Result<()> {
                                     state::push_spark(&mut st.phill_history, (br.phill_voltage*100.0) as u64);
                                     state::push_spark(&mut st.trust_history, (br.voice_trust*100.0) as u64);
                                     state::push_spark(&mut st.id_history,    (br.combined_id*100.0) as u64);
-                                    state::push_spark(&mut st.nova_broca_hist, br.nova_broca_spikes.min(32)*3);
-                                    state::push_spark(&mut st.sim_broca_hist,  br.simona_broca_spikes.min(32)*3);
+                                    state::push_spark(&mut st.alpha_broca_hist, br.alpha_broca_spikes.min(32)*3);
                                     st.brain       = br;
                                     st.total_ticks = tick;
                                 });
@@ -371,14 +366,14 @@ fn main() -> anyhow::Result<()> {
 
                         // ── Poll proactive speech (girls type to chat unprompted) ──
                         // Leaks the personality chose to speak OUT land in the main
-                        // chat as Nova/Simona lines — no user input required.
+                        // chat as Alpha lines — no user input required.
                         if let Ok(msgs) = brain.call_method0("get_proactive_messages") {
                             if let Ok(items) = msgs.extract::<Vec<(String, String)>>() {
                                 if !items.is_empty() {
                                     update_state(&s, |st| {
                                         for (who, text) in &items {
                                             st.chat_history.push(ChatLine {
-                                                speaker: who.clone(),   // "nova" | "simona"
+                                                speaker: who.clone(),   // "alpha"
                                                 text: text.clone(),
                                                 regions: vec![], story_mode: false, from_stt: false,
                                             });
@@ -447,7 +442,7 @@ fn main() -> anyhow::Result<()> {
 
                         // ── 20Hz pace ─────────────────────────────────────────
                         // Release the GIL during the inter-tick sleep so the Python
-                        // PersonalityThreads (Nova/Simona) actually get CPU to run
+                        // the Alpha PersonalityThread actually gets CPU to run
                         // their OWN loops — stream of consciousness, proactive
                         // speech, sibling chat. Without this the brain thread holds
                         // the GIL the entire tick and they can only produce output

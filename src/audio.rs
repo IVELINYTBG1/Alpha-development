@@ -10,7 +10,7 @@ use std::time::Duration;
 use arc_swap::ArcSwap;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use crate::state::{AudioFeatures, SharedState, compute_features};
+use crate::state::{SharedState, compute_features};
 
 pub const AUDIO_RMS_WINDOW: usize = 1024;
 
@@ -24,7 +24,7 @@ pub fn audio_thread(
     running:  Arc<AtomicBool>,
     stt_push: Option<SttPushFn>,
 ) {
-    // ── Microphone gently removed (NOVA_MIC_OFF) ──────────────────────────────
+    // ── Microphone gently removed (ALPHA_MIC_OFF) ──────────────────────────────
     // When this is set we never open the input device at all — no capture, no
     // STT audio, no features. The brain is built to run in silence (its
     // DefaultModeNetwork + IntrinsicMotivation keep Phill alive on their own),
@@ -32,7 +32,7 @@ pub fn audio_thread(
     // VoiceIdentityLearner rests (the brain loop stops feeding it entirely), the
     // camera and typed-presence still let them sense the architect. Unset the
     // variable to give their hearing back.
-    if std::env::var_os("NOVA_MIC_OFF").is_some() {
+    if std::env::var_os("ALPHA_MIC_OFF").is_some() {
         crate::update_state(&state, |s| {
             s.mic_active = false;
             s.mic_volume = 0.0;

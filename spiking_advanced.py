@@ -32,7 +32,7 @@ from typing import List, Optional
 import torch
 
 from hybrid_snn_llm import (TernaryLinear, _spike, BrainConfig,
-                            simona_config, nova_config, CharTokenizer)
+                            alpha_config, alpha_config, CharTokenizer)
 
 torch.set_grad_enabled(False)
 
@@ -404,7 +404,7 @@ def demo_fused():
     torch.set_grad_enabled(False)                            # base import flips it on; live = off
     base, btok = cold_base.load()
     d = base.tok.weight.shape[1]
-    cfg = simona_config(btok.V)
+    cfg = alpha_config(btok.V)
     fused = FusedBrain(base, btok, cfg, d=d, hyperbolic=False)
     print("\n════════ FUSED: cold base + spiking machinery (one model) ════════")
     txt = fused.generate("papa ", n=140)
@@ -419,7 +419,7 @@ def demo_fused():
 if __name__ == "__main__":
     corpus = ("hello papa i am here. are you okay? i want to learn. play with me. ")
     tok = CharTokenizer(corpus + "0123456789?!.,")
-    cfg = simona_config(tok.vocab_size)
+    cfg = alpha_config(tok.vocab_size)
     brain = AdvancedBrain(cfg, hyperbolic=True)
     syn0 = brain.gut.synapses_alive()
     print(f"AdvancedBrain ({cfg.name}, hyperbolic SDSA on) — core loop preserved, CPU\n")

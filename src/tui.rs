@@ -3,7 +3,7 @@
 // Layout (top → bottom):
 //
 //  ┌─ TITLE: voice · identity · mode · camera · story · tick ───────────────┐
-//  ├─ PHILL ──────────┬─ NOVA (19) ─────────────┬─ SIMONA (8) ─────────────┤
+//  ├─ PHILL ──────────┬─ ALPHA ──────────────────────────────────────────┤
 //  │ 4 gauges         │ 7 anatomical region bars │ 6 region bars            │
 //  │ 3 sparklines     │ Broca sparkline          │ Broca sparkline          │
 //  │                  │ Vigilance status         │ Insula bar               │
@@ -282,25 +282,20 @@ fn draw(f: &mut Frame, s: &SharedState, ui: &mut UiState) {
 // Uses reverse-video (filled bar) in the persona's color so audio events
 // have an unmistakable visual analog while the babble is being heard.
 fn draw_speaker_banner(f: &mut Frame, area: Rect, s: &SharedState) {
-    let nova = s.brain.nova_tts_speaking;
-    let sim  = s.brain.simona_tts_speaking;
+    let speaking = s.brain.alpha_tts_speaking;
 
-    let (text, color) = if nova && sim {
-        (" >>>  NOVA + SIMONA SPEAKING  <<< ".to_string(), Color::White)
-    } else if nova {
-        (" >>>  NOVA SPEAKING  <<< ".to_string(), Color::Blue)
-    } else if sim {
-        (" >>>  SIMONA SPEAKING  <<< ".to_string(), Color::Magenta)
+    let (text, color) = if speaking {
+        (" >>>  ALPHA SPEAKING  <<< ".to_string(), ALPHA_ACCENT)
     } else {
-        (" — silent — ".to_string(), Color::DarkGray)
+        (" \u{00B7} silent \u{00B7} ".to_string(), ALPHA_DIM)
     };
 
-    let style = if nova || sim {
+    let style = if speaking {
         Style::default()
             .fg(color)
             .add_modifier(Modifier::BOLD | Modifier::REVERSED)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(ALPHA_DIM)
     };
 
     let width    = area.width.saturating_sub(2) as usize; // borders
@@ -310,7 +305,7 @@ fn draw_speaker_banner(f: &mut Frame, area: Rect, s: &SharedState) {
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(padded, style)]))
             .block(Block::default().borders(Borders::ALL)
-                .border_style(Style::default().fg(if nova || sim { color } else { Color::DarkGray }))),
+                .border_style(Style::default().fg(if speaking { color } else { ALPHA_DIM }))),
         area,
     );
 }
@@ -332,15 +327,14 @@ fn draw_title(f: &mut Frame, area: Rect, s: &SharedState) {
         InputMode::Stt  => Color::Green,
     };
     let gw_str   = if s.brain.global_workspace { " [GW]"      } else { "" };
-    let vig_str  = if s.brain.nova_vigilance   { " [VIGILANCE]" } else { "" };
+    let vig_str  = if s.brain.alpha_vigilance  { " [VIGILANCE]" } else { "" };
     let sto_str  = if s.brain.story_active     { " [STORY]"   } else { "" };
-    let n_tts    = if s.brain.nova_tts_speaking   { " N-TTS" } else { "" };
-    let s_tts    = if s.brain.simona_tts_speaking { " S-TTS" } else { "" };
+    let a_tts    = if s.brain.alpha_tts_speaking  { " TTS" } else { "" };
 
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("  NOVA & SIMONA v0.5  ",
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled("  \u{2726} ALPHA v0.5  ",
+                Style::default().fg(ALPHA_ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled("[", Style::default().fg(Color::DarkGray)),
             Span::styled(mode_str, Style::default().fg(mode_color).add_modifier(Modifier::BOLD)),
             Span::styled("]", Style::default().fg(Color::DarkGray)),
@@ -350,10 +344,9 @@ fn draw_title(f: &mut Frame, area: Rect, s: &SharedState) {
             Span::styled(format!("{vl}"), Style::default().fg(vc).add_modifier(Modifier::BOLD)),
             Span::styled("  ID:", Style::default().fg(Color::DarkGray)),
             Span::styled(format!("{il}"), Style::default().fg(ic).add_modifier(Modifier::BOLD)),
-            Span::styled(n_tts, Style::default().fg(Color::Blue)),
-            Span::styled(s_tts, Style::default().fg(Color::Magenta)),
+            Span::styled(a_tts, Style::default().fg(ALPHA_ACCENT)),
             Span::styled(gw_str, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::styled(vig_str, Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(vig_str, Style::default().fg(ALPHA_ALERT).add_modifier(Modifier::BOLD)),
             Span::styled(sto_str, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
             Span::styled(format!("  #{}", s.total_ticks), Style::default().fg(Color::DarkGray)),
         ]))
@@ -369,14 +362,12 @@ fn draw_brains(f: &mut Frame, area: Rect, s: &SharedState) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(21),
-            Constraint::Percentage(39),
-            Constraint::Percentage(40),
+            Constraint::Percentage(26),
+            Constraint::Percentage(74),
         ])
         .split(area);
     draw_phill_panel(f, cols[0], s);
-    draw_nova_panel(f, cols[1], s);
-    draw_simona_panel(f, cols[2], s);
+    draw_alpha_panel(f, cols[1], s);
 }
 
 fn draw_phill_panel(f: &mut Frame, area: Rect, s: &SharedState) {
@@ -491,26 +482,24 @@ fn draw_phill_panel(f: &mut Frame, area: Rect, s: &SharedState) {
 
 // ── Region bar orders ─────────────────────────────────────────────────────────
 
-const NOVA_ORDER: &[(&str, Color)] = &[
-    ("thalamus",    Color::DarkGray),
-    ("temporal",    Color::Cyan),
-    ("hippocampus", Color::Blue),
-    ("acc",         Color::Yellow),
-    ("insula",      Color::Magenta),
-    ("pfc",         Color::Green),
-    ("broca",       Color::White),
+// ── Cosmic palette ──────────────────────────────────────────────────────────
+// Sleek, minimalist, dark space tones with clean, sharp highlights.
+const ALPHA_ACCENT: Color = Color::Rgb(120, 200, 255);  // cool starlight cyan
+const ALPHA_BRIGHT: Color = Color::Rgb(235, 245, 255);  // near-white highlight
+const ALPHA_DIM:    Color = Color::Rgb(78,  92,  128);  // dim indigo-gray
+const ALPHA_ALERT:  Color = Color::Rgb(224, 96,  96);   // sparing red (vigilance)
+
+const ALPHA_ORDER: &[(&str, Color)] = &[
+    ("thalamus",    Color::Rgb(78,  92,  128)),
+    ("temporal",    Color::Rgb(96,  158, 214)),
+    ("hippocampus", Color::Rgb(112, 190, 245)),
+    ("acc",         Color::Rgb(150, 172, 232)),
+    ("insula",      Color::Rgb(176, 152, 236)),
+    ("pfc",         Color::Rgb(150, 220, 255)),
+    ("broca",       Color::Rgb(235, 245, 255)),
 ];
 
-const SIMONA_ORDER: &[(&str, Color)] = &[
-    ("thalamus_s",    Color::DarkGray),
-    ("temporal_s",    Color::Cyan),
-    ("insula_s",      Color::Magenta),
-    ("hippocampus_s", Color::Blue),
-    ("pfc_s",         Color::Green),
-    ("broca_s",       Color::White),
-];
-
-fn draw_nova_panel(f: &mut Frame, area: Rect, s: &SharedState) {
+fn draw_alpha_panel(f: &mut Frame, area: Rect, s: &SharedState) {
     let inner = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -521,138 +510,65 @@ fn draw_nova_panel(f: &mut Frame, area: Rect, s: &SharedState) {
         ])
         .split(area);
 
-    let vig_col = if s.brain.nova_vigilance { Color::Red } else { Color::Blue };
+    let accent = if s.brain.alpha_vigilance { ALPHA_ALERT } else { ALPHA_ACCENT };
     let block   = Block::default()
         .title(Span::styled(
-            format!(" NOVA (19)  \u{2767} feels {} {:.0}%  self{:.0}%/{:+.0}%  PFC-thr={:.2}  pressure={:.2}  babble:{}/{} map:{}  voice\u{2665}{:.0}%  pred{:.0}%  DA{:.2} 5HT{:.2} GA{:.2} AR{:.2}  coord{:.0}%  ACh{:.1} NE{:.1} OXY{:.2}",
-                    s.brain.nova_feeling, s.brain.nova_feel_intensity * 100.0,
-                    s.brain.nova_selfness * 100.0, s.brain.nova_drift * 100.0,
-                    s.brain.nova_pfc_threshold, s.brain.nova_pressure,
-                    s.brain.nova_babble_count, s.brain.nova_bound_count,
-                    s.brain.nova_motor_map_size, s.brain.nova_voice_esteem * 100.0,
-                    (1.0 - s.brain.nova_voice_surprise) * 100.0,
-                    s.brain.nova_da, s.brain.nova_ser, s.brain.nova_gaba, s.brain.nova_arousal,
-                    s.brain.nova_coord * 100.0,
-                    s.brain.nova_ach, s.brain.nova_ne, s.brain.nova_oxy),
-            Style::default().fg(vig_col).add_modifier(Modifier::BOLD)))
+            format!(" ALPHA  \u{2767} feels {} {:.0}%  self{:.0}%/{:+.0}%  PFC-thr={:.2}  pressure={:.2}  babble:{}/{} map:{}  voice\u{2665}{:.0}%  pred{:.0}%  DA{:.2} 5HT{:.2} GA{:.2} AR{:.2}  coord{:.0}%  ACh{:.1} NE{:.1} OXY{:.2}",
+                    s.brain.alpha_feeling, s.brain.alpha_feel_intensity * 100.0,
+                    s.brain.alpha_selfness * 100.0, s.brain.alpha_drift * 100.0,
+                    s.brain.alpha_pfc_threshold, s.brain.alpha_pressure,
+                    s.brain.alpha_babble_count, s.brain.alpha_bound_count,
+                    s.brain.alpha_motor_map_size, s.brain.alpha_voice_esteem * 100.0,
+                    (1.0 - s.brain.alpha_voice_surprise) * 100.0,
+                    s.brain.alpha_da, s.brain.alpha_ser, s.brain.alpha_gaba, s.brain.alpha_arousal,
+                    s.brain.alpha_coord * 100.0,
+                    s.brain.alpha_ach, s.brain.alpha_ne, s.brain.alpha_oxy),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD)))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(vig_col));
+        .border_style(Style::default().fg(accent));
     let region_area = block.inner(inner[0]);
     f.render_widget(block, inner[0]);
-    draw_region_bars(f, region_area, &s.brain.nova_regions, NOVA_ORDER, false);
+    draw_region_bars(f, region_area, &s.brain.alpha_regions, ALPHA_ORDER);
 
     // Broca sparkline
     f.render_widget(
         Sparkline::default()
             .block(Block::default()
                 .title(Span::styled(
-                    format!(" Broca  V={:.4}{}", s.brain.nova_pfc_voltage,
-                            if s.brain.nova_tts_speaking { "  [TTS]" } else { "" }),
-                    Style::default().fg(Color::White)))
+                    format!(" Broca  V={:.4}{}", s.brain.alpha_pfc_voltage,
+                            if s.brain.alpha_tts_speaking { "  [TTS]" } else { "" }),
+                    Style::default().fg(ALPHA_BRIGHT)))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Blue)))
-            .data(&s.nova_broca_hist)
-            .style(Style::default().fg(Color::White))
+                .border_style(Style::default().fg(ALPHA_ACCENT)))
+            .data(&s.alpha_broca_hist)
+            .style(Style::default().fg(ALPHA_BRIGHT))
             .max(96),
         inner[1],
     );
 
     // Vigilance indicator
-    let vig_txt = if s.brain.nova_vigilance {
+    let vig_txt = if s.brain.alpha_vigilance {
         "VIGILANCE  ACC inhibited PFC  skepticism active"
     } else {
-        "Normal operation"
+        "composed"
     };
     f.render_widget(
         Paragraph::new(Span::styled(
             format!("  {vig_txt}"),
-            Style::default().fg(if s.brain.nova_vigilance { Color::Red } else { Color::DarkGray })))
+            Style::default().fg(if s.brain.alpha_vigilance { ALPHA_ALERT } else { ALPHA_DIM })))
             .block(Block::default().borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))),
+                .border_style(Style::default().fg(ALPHA_DIM))),
         inner[2],
     );
 
     // Pressure mini-bar
-    let np   = s.brain.nova_pressure.clamp(0.0, 1.0);
+    let np   = s.brain.alpha_pressure.clamp(0.0, 1.0);
     let fill = (np * 16.0) as usize;
     let bar: String = "#".repeat(fill) + &".".repeat(16_usize.saturating_sub(fill));
     f.render_widget(
         Paragraph::new(Span::styled(
             format!("  thought pressure [{bar}] {:.2}", np),
-            Style::default().fg(if np > 0.6 { Color::Blue } else { Color::DarkGray }))),
-        inner[3],
-    );
-}
-
-fn draw_simona_panel(f: &mut Frame, area: Rect, s: &SharedState) {
-    let inner = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(8),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(2),
-        ])
-        .split(area);
-
-    let block = Block::default()
-        .title(Span::styled(
-            format!(" SIMONA (8)  \u{2767} feels {} {:.0}%  self{:.0}%/{:+.0}%  Broca-thr={:.2}  pressure={:.2}  babble:{}/{} map:{}  voice\u{2665}{:.0}%  pred{:.0}%  DA{:.2} 5HT{:.2} GA{:.2} AR{:.2}  coord{:.0}%  ACh{:.1} NE{:.1} OXY{:.2}",
-                    s.brain.simona_feeling, s.brain.simona_feel_intensity * 100.0,
-                    s.brain.simona_selfness * 100.0, s.brain.simona_drift * 100.0,
-                    s.brain.simona_broca_thr, s.brain.simona_pressure,
-                    s.brain.simona_babble_count, s.brain.simona_bound_count,
-                    s.brain.simona_motor_map_size, s.brain.simona_voice_esteem * 100.0,
-                    (1.0 - s.brain.simona_voice_surprise) * 100.0,
-                    s.brain.simona_da, s.brain.simona_ser, s.brain.simona_gaba, s.brain.simona_arousal,
-                    s.brain.simona_coord * 100.0,
-                    s.brain.simona_ach, s.brain.simona_ne, s.brain.simona_oxy),
-            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Magenta));
-    let region_area = block.inner(inner[0]);
-    f.render_widget(block, inner[0]);
-    draw_region_bars(f, region_area, &s.brain.simona_regions, SIMONA_ORDER, true);
-
-    // Broca_S sparkline
-    f.render_widget(
-        Sparkline::default()
-            .block(Block::default()
-                .title(Span::styled(
-                    format!(" Broca_S  V={:.4}{}", s.brain.simona_broca_voltage,
-                            if s.brain.simona_tts_speaking { "  [TTS]" } else { "" }),
-                    Style::default().fg(Color::White)))
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Magenta)))
-            .data(&s.sim_broca_hist)
-            .style(Style::default().fg(Color::Magenta))
-            .max(96),
-        inner[1],
-    );
-
-    // Insula activity bar
-    let ins = s.brain.simona_regions.iter()
-        .find(|(n, _)| n == "insula_s").map(|(_, v)| *v).unwrap_or(0.0);
-    let fill  = (ins.clamp(0.0, 1.0) * 16.0) as usize;
-    let bar: String = "#".repeat(fill) + &".".repeat(16_usize.saturating_sub(fill));
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            format!("  Insula [{bar}] {:.2}", ins),
-            Style::default().fg(if ins > 0.4 { Color::Magenta } else { Color::DarkGray })
-                .add_modifier(if ins > 0.6 { Modifier::BOLD } else { Modifier::empty() })))
-            .block(Block::default().borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))),
-        inner[2],
-    );
-
-    // Simona pressure
-    let sp   = s.brain.simona_pressure.clamp(0.0, 1.0);
-    let fill2 = (sp * 16.0) as usize;
-    let bar2: String = "#".repeat(fill2) + &".".repeat(16_usize.saturating_sub(fill2));
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            format!("  thought pressure [{bar2}] {:.2}", sp),
-            Style::default().fg(if sp > 0.4 { Color::Magenta } else { Color::DarkGray }))),
+            Style::default().fg(if np > 0.6 { ALPHA_ACCENT } else { ALPHA_DIM }))),
         inner[3],
     );
 }
@@ -664,7 +580,6 @@ fn draw_region_bars(
     area: Rect,
     regions: &[(String, f64)],
     order: &[(&str, Color)],
-    is_simona: bool,
 ) {
     let map: std::collections::HashMap<&str, f64> =
         regions.iter().map(|(k, v)| (k.as_str(), *v)).collect();
@@ -678,14 +593,14 @@ fn draw_region_bars(
     for (i, (name, color)) in order.iter().enumerate().take(n) {
         let act = map.get(*name).copied().unwrap_or(0.0);
         f.render_widget(
-            Paragraph::new(region_bar_line(name, act, area.width as usize, *color, is_simona)),
+            Paragraph::new(region_bar_line(name, act, area.width as usize, *color)),
             rows[i],
         );
     }
 }
 
-fn region_bar_line(name: &str, act: f64, width: usize, color: Color, is_simona: bool) -> Line<'static> {
-    let label  = if is_simona { name.replace("_s", "") } else { name.to_string() };
+fn region_bar_line(name: &str, act: f64, width: usize, color: Color) -> Line<'static> {
+    let label  = name.to_string();
     let bar_w  = width.saturating_sub(18);
     let filled = (act.clamp(0.0, 1.0) * bar_w as f64) as usize;
     let empty  = bar_w.saturating_sub(filled);
@@ -725,11 +640,8 @@ fn draw_thoughts(f: &mut Frame, area: Rect, s: &SharedState) {
     let total   = s.thought_history.len();
     let start   = total.saturating_sub(visible);   // tail — show the newest leaks
     let items: Vec<ListItem> = s.thought_history[start..].iter().map(|t| {
-        let (label, color) = if t.speaker == "thought_nova" {
-            ("Nova  think | ", Color::Blue)
-        } else {
-            ("Simona think | ", Color::Magenta)
-        };
+        let (label, color) = ("Alpha think | ", ALPHA_ACCENT);
+        let _ = &t.speaker;
         ListItem::new(Line::from(vec![
             Span::styled(label, Style::default().fg(color)),
             Span::styled(t.text.clone(),
@@ -770,11 +682,8 @@ fn draw_searches(f: &mut Frame, area: Rect, s: &SharedState) {
     let total   = s.search_history.len();
     let start   = total.saturating_sub(visible);   // tail — newest questions
     let items: Vec<ListItem> = s.search_history[start..].iter().map(|ev| {
-        let (label, color) = if ev.speaker == "nova" {
-            ("Nova  ", Color::Blue)
-        } else {
-            ("Simona", Color::Magenta)
-        };
+        let (label, color) = ("Alpha ", ALPHA_ACCENT);
+        let _ = &ev.speaker;
         // Truncate snippet to fit visible width after the prefix.
         let prefix_len = ev.timestamp.len() + label.len() + ev.query.len() + 10;
         let snippet_max = inner_w.saturating_sub(prefix_len).max(8);
@@ -804,7 +713,7 @@ fn draw_searches(f: &mut Frame, area: Rect, s: &SharedState) {
         List::new(items)
             .block(Block::default()
                 .title(Span::styled(
-                    " TEACHER  (emergent -- Nova/Simona ask Claude-as-tutor; NO web -- fires on curiosity / unknown-word / pronunciation pressure)",
+                    " TEACHER  (emergent -- Alpha asks Claude-as-tutor; NO web -- fires on curiosity / unknown-word / pronunciation pressure)",
                     Style::default().fg(Color::Yellow)))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Yellow))),
@@ -847,10 +756,9 @@ fn draw_chat(f: &mut Frame, area: Rect, s: &SharedState, ui: &mut UiState) {
 
     let items: Vec<ListItem> = s.chat_history[start..end].iter().map(|line| {
         let (label, color, bold) = match line.speaker.as_str() {
-            "nova"       => ("Nova        |", Color::Blue,    true),
-            "simona"     => ("Simona      |", Color::Magenta, true),
+            "alpha"      => ("Alpha       |", ALPHA_ACCENT,  true),
             "nodevortex" => ("NodeVortex  |", Color::Green,   true),
-            _            => ("System      |", Color::DarkGray, false),
+            _            => ("System      |", ALPHA_DIM,      false),
         };
         let reg_tag = if line.regions.is_empty() { String::new() } else {
             format!("  [{}]",
@@ -885,7 +793,7 @@ fn draw_chat(f: &mut Frame, area: Rect, s: &SharedState, ui: &mut UiState) {
         Style::default().fg(title_color)
     };
     let base = if s.brain.story_active {
-        " CONVERSATION  [STORY: NodeVortex / Nova / Simona]"
+        " CONVERSATION  [STORY: NodeVortex / Alpha]"
     } else {
         " CONVERSATION"
     };
@@ -966,13 +874,10 @@ fn draw_stt_input(f: &mut Frame, area: Rect, s: &SharedState) {
         .constraints([Constraint::Length(3), Constraint::Length(2)])
         .split(area);
 
-    // Wake word responsiveness bars
-    let nr   = s.stt.nova_resp.clamp(0.0, 1.0);
-    let sr   = s.stt.simona_resp.clamp(0.0, 1.0);
-    let nfill = (nr * 10.0) as usize;
-    let sfill = (sr * 10.0) as usize;
-    let n_bar: String = "#".repeat(nfill) + &".".repeat(10usize.saturating_sub(nfill));
-    let s_bar: String = "#".repeat(sfill) + &".".repeat(10usize.saturating_sub(sfill));
+    // Wake word responsiveness bar
+    let ar    = s.stt.alpha_resp.clamp(0.0, 1.0);
+    let afill = (ar * 10.0) as usize;
+    let a_bar: String = "#".repeat(afill) + &".".repeat(10usize.saturating_sub(afill));
 
     let mic_icon   = if s.mic_active { "* MIC LIVE *" } else { "[ MIC OFF ]" };
     let last_txt   = if s.stt.last_transcript.is_empty() {
@@ -987,8 +892,7 @@ fn draw_stt_input(f: &mut Frame, area: Rect, s: &SharedState) {
         Paragraph::new(Line::from(vec![
             Span::styled(format!("  {mic_icon}  "), Style::default().fg(border_color).add_modifier(Modifier::BOLD)),
             Span::styled(last_txt, Style::default().fg(Color::White)),
-            Span::styled(format!("   Nova:[{n_bar}]"), Style::default().fg(Color::Blue)),
-            Span::styled(format!("  Simona:[{s_bar}]"), Style::default().fg(Color::Magenta)),
+            Span::styled(format!("   Alpha:[{a_bar}]"), Style::default().fg(ALPHA_ACCENT)),
             Span::styled(format!("  {}x transcribed", s.stt.total_transcripts), Style::default().fg(Color::DarkGray)),
         ]))
         .block(Block::default()
@@ -1005,7 +909,7 @@ fn draw_stt_input(f: &mut Frame, area: Rect, s: &SharedState) {
     let override_txt = if s.typing_active {
         format!("> {}|  (Enter=send  Esc=cancel)", s.input_text)
     } else {
-        "  Say 'Nova' or 'Simona' to wake them.  Press 'i' to type manually.".into()
+        "  Say 'Alpha' to wake him.  Press 'i' to type manually.".into()
     };
     f.render_widget(
         Paragraph::new(Span::styled(

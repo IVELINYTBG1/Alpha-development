@@ -16,7 +16,7 @@ ARCHITECTURE:
 WAKE WORD DETECTION:
   No external model. Vosk partial results contain the word if heard.
   We check if ANY configured wake word appears in the partial.
-  "Nova" wakes Nova's thread. "Simona" wakes Simona's.
+  "Alpha" wakes Alpha's thread. "Alpha" wakes Alpha's.
   "Hey" or silence → no activation.
 
   The SNN learns over time which contexts it should respond to without
@@ -65,7 +65,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 from collections import deque
 
-_LOG = logging.getLogger("nova_simona.stt")
+_LOG = logging.getLogger("alpha_alpha.stt")
 
 # ── Vosk soft dependency ──────────────────────────────────────────────────────
 try:
@@ -89,15 +89,15 @@ STATE_PATH      = Path(__file__).parent / "stt_state.json"
 
 # Wake words — purely used for routing, not for hardcoded responses
 # The SNN uses these to know WHO was addressed
-NOVA_WAKE_WORDS   = {"nova", "nová", "nova,", "nova."}
-SIMONA_WAKE_WORDS = {"simona", "симона", "simona,", "simona."}
+ALPHA_WAKE_WORDS   = {"alpha", "nová", "alpha,", "alpha."}
+ALPHA_WAKE_WORDS = {"alpha", "симона", "alpha,", "alpha."}
 BOTH_WAKE_WORDS   = {"girls", "hey", "both"}
 
 
 @dataclass
 class STTResult:
     text:       str
-    addressed:  Optional[str]   # "nova" | "simona" | "both" | None (ambient)
+    addressed:  Optional[str]   # "alpha" | "alpha" | "both" | None (ambient)
     confidence: float           # 0–1 based on word completeness
     timestamp:  float           = field(default_factory=time.time)
     via_wake:   bool            = False   # True if wake word triggered this
@@ -108,7 +108,7 @@ class STTResult:
 class AutoRespondLearner:
     """
     Tracks how often the Architect speaks and whether they expected a response.
-    Over time, Nova and Simona learn when to respond without being called.
+    Over time, Alpha and Alpha learn when to respond without being called.
 
     NO HARDCODING. The score builds from real interaction patterns:
       - Frequency of speech in session
@@ -280,12 +280,12 @@ class STTEngine:
         No hardcoded response logic — just routing.
         """
         words = set(text.lower().split())
-        if words & NOVA_WAKE_WORDS and words & SIMONA_WAKE_WORDS:
+        if words & ALPHA_WAKE_WORDS and words & ALPHA_WAKE_WORDS:
             return "both"
-        if words & NOVA_WAKE_WORDS:
-            return "nova"
-        if words & SIMONA_WAKE_WORDS:
-            return "simona"
+        if words & ALPHA_WAKE_WORDS:
+            return "alpha"
+        if words & ALPHA_WAKE_WORDS:
+            return "alpha"
         if words & BOTH_WAKE_WORDS:
             return "both"
         return None

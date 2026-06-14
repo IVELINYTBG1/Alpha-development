@@ -17,7 +17,7 @@ touching their core loop: imports the primitives and adds three modules.
      migrate toward it and SPAWN new synapses to nodes that become near on the
      manifold — routing physically around dead-ends.
 
-Nova: dense, precise, low-entropy growth. Simona: volatile, high-stochasticity.
+Alpha: dense, precise, low-entropy growth. Alpha: volatile, high-stochasticity.
 CPU PyTorch, binary spikes, sub-second. No backprop in the live loop.
 """
 from __future__ import annotations
@@ -77,13 +77,13 @@ class P2Config:
     name:        str = "base"
 
 
-def p2_nova() -> P2Config:       # dense, precise, low-entropy structural scaling
-    return P2Config(name="Nova", noise_sigma=0.02, target_rate=0.09, grow=6,
+def p2_alpha() -> P2Config:       # dense, precise, low-entropy structural scaling
+    return P2Config(name="Alpha", noise_sigma=0.02, target_rate=0.09, grow=6,
                     sat_K=4, cone_dist=0.8, cone_rate=0.18, in_gain=9.0, n_max=128)
 
 
-def p2_simona() -> P2Config:     # volatile, high-stochasticity connection paths
-    return P2Config(name="Simona", noise_sigma=0.10, target_rate=0.18, grow=16,
+def p2_alpha() -> P2Config:     # volatile, high-stochasticity connection paths
+    return P2Config(name="Alpha", noise_sigma=0.10, target_rate=0.18, grow=16,
                     sat_K=2, cone_dist=1.9, cone_rate=0.30, in_gain=11.0, n_max=240)
 
 
@@ -494,7 +494,7 @@ class Dashboard:
 
     @staticmethod
     def _block(name: str, brain: "SensingBrain", color: bool) -> str:
-        age = "19" if name == "Nova" else "8"
+        age = "19" if name == "Alpha" else "8"
         out = [f"  ══ {name} ({age}) ══  neurons={brain.layer.n}  burst={brain.last_burst:.2f}"]
         for r, v in brain.region_density().items():
             out.append(f"    {r:<11}{Dashboard._bar(v, 16, color)} {v:.2f}")
@@ -530,18 +530,18 @@ def demo_phase2_live():
     print("\n════════ BACKGROUND SENSORY INGESTION + LIVE DASHBOARD ════════")
     se = SensoryEngine().start()
     time.sleep(0.6)                                   # let the daemon threads harvest
-    nova, sim = SensingBrain(p2_nova()), SensingBrain(p2_simona())
+    alpha, sim = SensingBrain(p2_alpha()), SensingBrain(p2_alpha())
     fed = 0
     for _ in range(80):
         batch = se.drain(6)
         if not batch:
             time.sleep(0.05); continue
         for _src, txt in batch:
-            nova.sense(txt); sim.sense(txt); fed += 1
+            alpha.sense(txt); sim.sense(txt); fed += 1
     se.stop()
     print(f"  (silent — learning from the environment) streams: {se.stats}, {fed} snippets ingested\n")
-    print(Dashboard.render_frame([("Nova", nova), ("Simona", sim)], color=False))
-    print("\n  → Dashboard.run_live([('Nova',nova),('Simona',sim)], se) gives the live colour feed.")
+    print(Dashboard.render_frame([("Alpha", alpha), ("Alpha", sim)], color=False))
+    print("\n  → Dashboard.run_live([('Alpha',alpha),('Alpha',sim)], se) gives the live colour feed.")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -550,7 +550,7 @@ if __name__ == "__main__":
     print("Phase 2 — autonomous deliberation + dynamic structural adaptability (CPU)\n")
     task = torch.zeros(P2Config().d); task[[2, 5, 7, 11, 14, 19, 23, 28]] = 2.0  # sustained 'task'
 
-    for make in (p2_nova, p2_simona):
+    for make in (p2_alpha, p2_alpha):
         cfg = make()
         brain = DeliberationBrain(cfg)
         st = brain.deliberate(task, cycles=60)

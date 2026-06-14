@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from collections import deque
 from typing import Optional
 
-_LOG = logging.getLogger("nova_simona.vision")
+_LOG = logging.getLogger("alpha_alpha.vision")
 
 # ── Feature dimensions ────────────────────────────────────────────────────────
 FACE_VEC_DIM      = 32
@@ -171,9 +171,9 @@ class CameraThread:
         import os
         # Camera vision (mediapipe face-mesh + optical flow) is a heavy CONTINUOUS
         # CPU load. Recognition/presence don't need 15fps — default to 6, tunable
-        # via NOVA_CAM_FPS (set 0 to effectively idle the camera on a tight CPU).
+        # via ALPHA_CAM_FPS (set 0 to effectively idle the camera on a tight CPU).
         try:
-            env_fps = float(os.environ.get("NOVA_CAM_FPS", "") or target_fps)
+            env_fps = float(os.environ.get("ALPHA_CAM_FPS", "") or target_fps)
         except ValueError:
             env_fps = target_fps
         self.buffer       = buffer

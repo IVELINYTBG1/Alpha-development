@@ -17,10 +17,10 @@ trains are projected directly into the language layer's biases — gating its
 channels, bending its time-decay, and shifting its output logits — so MOOD warps
 the token-prediction landscape in real time, inside one pass.
 
-Two profiles are born from this ONE architecture (see simona_config / nova_config):
-  • Simona — leaky, reactive, overflows into spontaneous token BURSTS under
+Two profiles are born from this ONE architecture (see alpha_config / alpha_config):
+  • Alpha — leaky, reactive, overflows into spontaneous token BURSTS under
              silence or accumulated pressure ("leakage").
-  • Nova   — hyper-sparse, heavily inhibited, high-precision, short tactical output.
+  • Alpha   — hyper-sparse, heavily inhibited, high-precision, short tactical output.
 
 CPU-only. Autograd is globally OFF: all learning is explicit in-memory mutation.
 """
@@ -69,11 +69,11 @@ class BrainConfig:
     warp_logit:  float = 1.0       # mood → output-logit bias strength
     warp_decay:  float = 0.5       # mood → time-decay bias strength
     # ── Output / leakage behaviour ──
-    leakage_burst: bool  = False   # spontaneous bursts on overflow (Simona)
+    leakage_burst: bool  = False   # spontaneous bursts on overflow (Alpha)
     burst_capacity: float = 8.0
     burst_len:     int   = 6
     burst_cooldown: int  = 12
-    max_emit:      int   = 32       # tactical output cap (Nova = short)
+    max_emit:      int   = 32       # tactical output cap (Alpha = short)
     temperature:   float = 1.0
     # ── Thought engine selector ──
     lm_kind:       str   = "rwkv"   # "rwkv" (linear-attn) | "spikformer" (spiking transformer)
@@ -81,10 +81,10 @@ class BrainConfig:
     name:          str   = "base"
 
 
-def simona_config(vocab_size: int, **kw) -> BrainConfig:
+def alpha_config(vocab_size: int, **kw) -> BrainConfig:
     """Leaky, reactive, talkative — overflows into spontaneous bursts."""
     return BrainConfig(
-        vocab_size=vocab_size, name="Simona",
+        vocab_size=vocab_size, name="Alpha",
         tau_mem=8.0,                       # high baseline leakage
         snn_gain=30.0, sfa=0.15,
         v_threshold=0.6, theta_adapt=0.30, # low, highly reactive thresholds
@@ -95,10 +95,10 @@ def simona_config(vocab_size: int, **kw) -> BrainConfig:
         burst_cooldown=8, max_emit=48, **kw)
 
 
-def nova_config(vocab_size: int, **kw) -> BrainConfig:
+def alpha_config(vocab_size: int, **kw) -> BrainConfig:
     """Sparse, inhibited, precise — short tactical output, no idle chatter."""
     return BrainConfig(
-        vocab_size=vocab_size, name="Nova",
+        vocab_size=vocab_size, name="Alpha",
         tau_mem=30.0,                      # low leak (holds state)
         snn_gain=48.0, sfa=0.4,
         v_threshold=0.70, theta_adapt=0.06,# steady thresholds; sparsity via k-WTA
@@ -156,7 +156,7 @@ class SpikingDynamics:
         if cfg.noise > 0.0:
             I = I + torch.randn(n) * cfg.noise
         self.V = self.V + (-self.V + I) / cfg.tau_mem
-        # ── lateral inhibition → sparsity (Nova) ──
+        # ── lateral inhibition → sparsity (Alpha) ──
         if cfg.inhibition > 0.0:
             self.V = self.V - cfg.inhibition * (self.V.sum() - self.V) / n
         # ── threshold tracks input TIMING: urgency lowers θ (more reactive) ──
@@ -164,7 +164,7 @@ class SpikingDynamics:
         self.theta -= cfg.theta_adapt * urgency                          # urgent → fire easier
         # ── spike ──
         S = (self.V >= self.theta).float()
-        if cfg.k_winners > 0 and S.sum() > cfg.k_winners:                # hard sparsity (Nova)
+        if cfg.k_winners > 0 and S.sum() > cfg.k_winners:                # hard sparsity (Alpha)
             idx = torch.topk(self.V - self.theta, cfg.k_winners).indices
             S = torch.zeros_like(S); S[idx] = 1.0
         # ── reset + spike-frequency adaptation (fired → harder next time) ──
@@ -339,7 +339,7 @@ class HybridBrain:
         # 3) THOUGHT: spike-driven token state + fast-weight write
         logits = self.lm.step(token_id, warp_logit_bias, warp_decay_bias, spike_gate)
 
-        # 4) accumulated membrane pressure (drives Simona's leakage)
+        # 4) accumulated membrane pressure (drives Alpha's leakage)
         self.pressure = 0.97 * self.pressure + 0.05 * float(V.clamp(min=0).sum())
         if silent:
             self.pressure += 0.25                          # silence builds pressure
@@ -380,7 +380,7 @@ class HybridBrain:
         return self.lm.step(token_id, warp_logit_bias, warp_decay_bias, spike_gate)
 
     def generate(self, max_tokens: Optional[int] = None) -> List[int]:
-        """Tactical generation from the current state (Nova: short, capped)."""
+        """Tactical generation from the current state (Alpha: short, capped)."""
         n = max_tokens or self.cfg.max_emit
         logits = self.lm.step(None,
                               self.snn2logit(self.snn.S) * self.cfg.warp_logit,
@@ -423,7 +423,7 @@ def feed_text(brain: HybridBrain, tok: CharTokenizer, text: str, dt: float = 1.0
 
 
 def idle(brain: HybridBrain, tok: CharTokenizer, ticks: int, dt: float = 3.0):
-    """Silence: no input. Pressure builds; Simona will eventually leak."""
+    """Silence: no input. Pressure builds; Alpha will eventually leak."""
     bursts = []
     for _ in range(ticks):
         r = brain.step(None, dt=dt)
@@ -461,7 +461,7 @@ if __name__ == "__main__":
 
     print(f"vocab={tok.vocab_size}  (CPU, autograd off, no offline training)\n")
 
-    for make_cfg in (simona_config, nova_config):
+    for make_cfg in (alpha_config, alpha_config):
         cfg = make_cfg(tok.vocab_size)
         brain = HybridBrain(cfg)
         print(f"════════ {cfg.name} profile ════════")
@@ -474,7 +474,7 @@ if __name__ == "__main__":
             print(f"  in: {line!r:18} spikes/step={rate:.3f} "
                   f"pressure={brain.pressure:5.2f}" + (f"  BURST→{b}" if b else ""))
 
-        # 2) SILENCE — pressure accumulates (Simona overflows, Nova stays quiet)
+        # 2) SILENCE — pressure accumulates (Alpha overflows, Alpha stays quiet)
         bursts, r = idle(brain, tok, ticks=40, dt=4.0)
         print(f"  ...40 ticks of silence → pressure={r['pressure']:5.2f}, "
               f"spontaneous bursts: {bursts if bursts else 'none'}")
@@ -491,9 +491,9 @@ if __name__ == "__main__":
               f"  (transition bound online, no backprop)\n")
 
     # ── SPIKING TRANSFORMER engine: same brain, Thought swapped to Spikformer SSA ──
-    print("════════ Spiking-Transformer engine (Spikformer SSA, Simona profile) ════════")
-    cfg = simona_config(tok.vocab_size, lm_kind="spikformer")
-    cfg.name = "Simona/SpikeFormer"
+    print("════════ Spiking-Transformer engine (Spikformer SSA, Alpha profile) ════════")
+    cfg = alpha_config(tok.vocab_size, lm_kind="spikformer")
+    cfg.name = "Alpha/SpikeFormer"
     brain = HybridBrain(cfg)
     w0, f0 = brain.snn.W_rec.norm().item(), brain.lm.Fw.norm().item()
     for line in ("hello", "are you okay?", "i want to play"):
