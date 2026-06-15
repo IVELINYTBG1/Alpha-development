@@ -609,6 +609,14 @@ class MultimodalImprinter:
         kin_thr    = self.KIN_THR_LEARN   if imprinting else self.KIN_THR_BASE
         lr         = self.TEMPLATE_LR_LEARN if imprinting else self.TEMPLATE_LR_BASE
 
+        # Bootstrap: the first time a channel appears, seed its template from the
+        # sample. Without this, cosine-vs-None is always 0, coincidence can never
+        # fire, and learning never starts (templates only ever update INSIDE a
+        # coincidence). Seeding the first sighting lets recognition actually begin.
+        if face_vec  is not None and self.face_template  is None: self.face_template  = face_vec.copy()
+        if voice_vec is not None and self.voice_template is None: self.voice_template = voice_vec.copy()
+        if kin_vec   is not None and self.kin_template   is None: self.kin_template   = kin_vec.copy()
+
         # Compute similarity scores
         fs = self._cosine(self.face_template,  face_vec)  if face_vec  is not None else 0.0
         vs = self._cosine(self.voice_template, voice_vec) if voice_vec is not None else 0.0
@@ -623,13 +631,29 @@ class MultimodalImprinter:
         self.voice_score = self._ema_voice
         self.kin_score   = self._ema_kin
 
-        # Geometric mean — all 3 must be high for combined to be high
-        self.combined = float(
-            (self._ema_face * self._ema_voice * self._ema_kin) ** (1/3)
-        )
+        # Which sensory channels are actually present this tick. The mic may be
+        # OFF (noisy room) — then identity rests on the CAMERA (face + motion)
+        # alone, instead of being forced to zero through an absent voice channel.
+        present = []   # (ema_score, raw_score, threshold)
+        if face_vec  is not None: present.append((self._ema_face,  fs, face_thr))
+        if voice_vec is not None: present.append((self._ema_voice, vs, voice_thr))
+        if kin_vec   is not None: present.append((self._ema_kin,   ks, kin_thr))
 
-        # Coincidence detection — all 3 above threshold simultaneously
-        coincidence = (fs >= face_thr and vs >= voice_thr and ks >= kin_thr)
+        # Combined = geometric mean over the channels we actually have (all 3 when
+        # the mic is on; face + motion when it's off).
+        if present:
+            prod = 1.0
+            for ema, _, _ in present:
+                prod *= max(0.0, ema)
+            self.combined = float(prod ** (1.0 / len(present)))
+        else:
+            self.combined = 0.0
+
+        # Coincidence = every PRESENT channel above its threshold, with at least
+        # TWO channels agreeing — so a static face alone (a photo) can't pass, but
+        # face + motion (camera-only) or face + voice + motion both can.
+        coincidence = (len(present) >= 2
+                       and all(raw >= thr for _, raw, thr in present))
 
         if coincidence:
             self.coincidence_count += 1

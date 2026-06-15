@@ -8,7 +8,9 @@ snntorch>=0.9.1
 numpy>=1.26.0
 
 # ── Vision (camera + face + motion) ──────────────────────────────────────────
-mediapipe>=0.10.0
+# NOTE: mediapipe 0.10.20+ removed the legacy `mp.solutions` API that vision.py's
+# FaceMesh pipeline uses, so pin to a solutions-capable release.
+mediapipe>=0.10.9,<0.10.15
 opencv-python>=4.8.0
 
 # ── STT backends (try in order, first installed wins) ────────────────────────
