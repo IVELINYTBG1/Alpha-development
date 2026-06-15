@@ -14,7 +14,21 @@ A CPU-only neuromorphic spiking neural network (SNN) running a single, calm AI p
 
 The temperament is not a prompt — it's encoded in the substrate: high serotonin (patient), a cool amygdala (not rattled), a high intrinsic-motivation threshold, and gating so autonomous thoughts stay *inner* (shown in the thoughts pane) rather than spoken.
 
-## Build & run
+## Quick test (no build, no mic)
+
+Just want to talk to Alpha? With the Python deps installed (CPU PyTorch + snntorch
++ numpy) you can skip the Rust/TUI/audio stack entirely:
+
+```
+python3 alpha_chat.py
+```
+
+A tiny console: type to him, he replies in his own emergent words (terse at first —
+he learns over time), with his inner thoughts and a status line shown. Commands:
+`:status`, `:tick N`, `quit`. Set `ANTHROPIC_API_KEY` first and his curiosity will
+also reach the Haiku tutor so he learns vocabulary + grammar as you chat.
+
+## Build & run (full app: TUI + voice + camera)
 
 ```
 source .env                  # exports PYO3_PYTHON + thread pinning + disables CUDA
