@@ -4164,7 +4164,10 @@ class AlphaBrain:
         }
 
         # Thought pipe: Alpha leaks only under real pressure
-        self.thought_pipe = ThoughtPipe("Alpha", leak_threshold=0.85, decay=0.97)
+        # Rich INNER life: a low-ish leak threshold so inner thoughts surface to
+        # the thoughts pane often (a busy mind). This is separate from SPEECH —
+        # leaks stay inner thoughts; he still speaks only when spoken to.
+        self.thought_pipe = ThoughtPipe("Alpha", leak_threshold=0.45, decay=0.97)
         self._vigilance   = False   # True when ACC fires inhibitory spike
 
     def modulate_all(self, V_phill: float, neuro_offset: float = 0.0):
@@ -4805,9 +4808,9 @@ class PersonalityThread(threading.Thread):
 
         # 6) Autonomy pressure (per-personality idle timer).
         own_last_leak = getattr(self.pipe, "last_leak_tick", 0)
-        idle = min(1.0, (local_tick - own_last_leak) / (800.0 if self.is_alpha else 180.0))
-        cur_decay = host._alpha_cur_decay if self.is_alpha else host._alpha_cur_decay
-        autop = (0.40 * idle * boredom + 0.30 * cur_decay) * (0.04 if self.is_alpha else 0.025)
+        idle = min(1.0, (local_tick - own_last_leak) / 280.0)
+        cur_decay = host._alpha_cur_decay
+        autop = (0.40 * idle * boredom + 0.30 * cur_decay) * 0.09
         self.pipe.add_autonomy_pressure(autop)
 
         # 7) Compose a candidate inner thought from current activity and
@@ -4829,7 +4832,7 @@ class PersonalityThread(threading.Thread):
         # lexicon). Alpha reasons; Alpha (8) effectively skips this.
         try:
             reasoner = host.alpha_reason if self.is_alpha else host.alpha_reason
-            due = (local_tick - getattr(host, "_alpha_last_delib", 0)) > 80
+            due = (local_tick - getattr(host, "_alpha_last_delib", 0)) > 45
             if self.is_alpha and (intrinsic_fired or due):
                 host._alpha_last_delib = local_tick
                 seeds = list(self.wm.top_k(k=2) if hasattr(self.wm, "top_k") else []) \
@@ -4837,6 +4840,47 @@ class PersonalityThread(threading.Thread):
                 chain, concl = reasoner.deliberate(seeds, host.sem, host._reason_links, suppress=host._concept_hab.suppression)
                 if chain and len(chain) >= 2:
                     self.pipe.push(" → ".join(chain))   # a reasoned thought
+        except Exception:
+            pass
+
+        # 7a-bis) MIND-WANDERING — a full inner life grounded in MEMORY.
+        # When the world is quiet there is still a stream of consciousness: he
+        # free-associates over what he KNOWS (the lexicon), reasons across it,
+        # and the musings surface as INNER thoughts (never spoken — output stays
+        # gated). This is what keeps the thoughts pane "full" like the old engine
+        # even with no live input: rumination from memory, rotated by habituation
+        # so it doesn't loop. Richer as his vocabulary grows.
+        try:
+            entries = getattr(host.sem, "entries", {}) or {}
+            wander_due = (local_tick - getattr(self, "_wander_last", -9999)) > 11
+            if entries and wander_due and (intrinsic_fired or boredom > 0.20):
+                self._wander_last = local_tick
+                import random as _wr
+                pool = [w for w, e in entries.items()
+                        if isinstance(e, dict) and not w.startswith("__") and len(w) >= 3]
+                if pool:
+                    def _w(w):
+                        e = entries.get(w, {})
+                        return float(e.get("spike_mean", 0.0)) + 0.4 * float(e.get("count", 0))
+                    pool.sort(key=_w, reverse=True)
+                    top = pool[:14]; _wr.shuffle(top)
+                    seeds = top[:_wr.randint(1, 3)]
+                    thought = None
+                    try:
+                        chain, _c = host.alpha_reason.deliberate(
+                            seeds, host.sem, host._reason_links,
+                            suppress=host._concept_hab.suppression)
+                        if chain and len(chain) >= 2:
+                            thought = " → ".join(chain)        # a line of LOGIC
+                    except Exception:
+                        pass
+                    if not thought:
+                        thought = "  ".join(seeds)             # a free association
+                    self.pipe.push(thought)
+                    try:
+                        host._concept_hab.surface(*seeds)      # fatigue → rotate topics
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -5171,7 +5215,10 @@ class NeuromorphicBrain:
         # ── Autonomy substrate (Alpha: patient, quiet) ────────────────────
         self.dmn                = DefaultModeNetwork()
         self.alpha_dmn           = DefaultModeNetwork(build_rate=0.0012)
-        self.alpha_motiv         = IntrinsicMotivation(threshold=1.8, build_rate=0.0045)
+        # Lower threshold + faster build so his intrinsic "spark" fires often —
+        # driving curiosity, reasoning and inner thoughts. (Output stays gated:
+        # an active mind, not a chatty mouth.)
+        self.alpha_motiv         = IntrinsicMotivation(threshold=1.1, build_rate=0.006)
         self._alpha_motiv_build0   = self.alpha_motiv.build_rate
         self._alpha_cur_decay    = 0.0
 
