@@ -20,8 +20,12 @@ brain_stderr.log
 crash.log
 *.log
 
-# ── Per-run learned state (regenerated at runtime; keep the seed
-#    semantic_memory.json tracked, but not the volatile binary/JSON state) ──
+# ── Per-run learned / PERSONAL state — never committed ───────────────
+# semantic_memory.json now also holds the architect's biometric identity
+# (face + voice templates), so it must stay LOCAL/private. It regenerates its
+# Alpha seed lexicon on first run, so nothing is lost by not shipping it.
+semantic_memory.json
+training_trace.jsonl
 *.npz
 babble_*.json
 working_memory_*.json

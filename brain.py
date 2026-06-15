@@ -2107,11 +2107,6 @@ class VoiceIdentityLearner:
         self.trust = 0.0; self.samples = 0; self.locked = False
         self._sum = np.zeros(self.FEAT_DIM, dtype=np.float64)
         self._low_sim_run = 0   # consecutive low-sim speech frames
-        # Persist the voiceprint so Alpha gets used to the architect OVER TIME,
-        # across restarts — not re-meeting a stranger every launch.
-        self._save_path = Path("voice_identity.json")
-        self._save_n = 0
-        self._load()
         _log("VoiceIdentityLearner initialized")
 
     def update(self, features: list) -> float:
@@ -2130,7 +2125,6 @@ class VoiceIdentityLearner:
             self.trust = 0.5
             if self.samples >= self.MIN_SAMPLES and not self.locked:
                 self.locked = True; _log(f"Voice locked after {self.samples} frames")
-            self._save()
             return self.trust
         sim = float(np.dot(self.template, f_n))
         sim = max(0.0, sim)
@@ -2157,44 +2151,7 @@ class VoiceIdentityLearner:
                 self._low_sim_run = 0
         else:
             self._low_sim_run = 0
-        # Periodically persist the evolving voiceprint (every ~200 speech frames).
-        self._save_n += 1
-        if self._save_n % 200 == 0:
-            self._save()
         return self.trust
-
-    def _save(self):
-        try:
-            state = {
-                "template": self.template.tolist() if self.template is not None else None,
-                "trust":    float(self.trust),
-                "samples":  int(self.samples),
-                "locked":   bool(self.locked),
-                "sum":      self._sum.tolist(),
-            }
-            with open(self._save_path, "w") as f:
-                json.dump(state, f)
-        except Exception:
-            pass
-
-    def _load(self):
-        if not self._save_path.exists():
-            return
-        try:
-            with open(self._save_path) as f:
-                state = json.load(f)
-            if state.get("template"):
-                self.template = np.array(state["template"], dtype=np.float32)
-            self.trust   = float(state.get("trust", 0.0))
-            self.samples = int(state.get("samples", 0))
-            self.locked  = bool(state.get("locked", False))
-            s = state.get("sum")
-            if s is not None:
-                self._sum = np.array(s, dtype=np.float64)
-            if self.template is not None:
-                _log(f"Voice identity recalled: trust={self.trust:.2f}, {self.samples} frames seen")
-        except Exception:
-            pass
 
     def get_vec(self) -> Optional[np.ndarray]:
         return self.template.copy() if self.template is not None else None
@@ -2341,6 +2298,9 @@ class SharedSemanticDictionary:
     def __init__(self, path="semantic_memory.json"):
         self.path = Path(path)
         self.entries: dict = {}; self._writes = 0
+        # The architect's identity (face + voice templates) lives IN semantic
+        # memory under a reserved key, so Alpha never relearns him from scratch.
+        self.identity: dict = {}
         # Thread-safety: both PersonalityThreads call alpha_write / alpha_write
         # via the babbling cortex and episodic consolidation. Reads of
         # `entries` are best-effort (eventual consistency is fine for a
@@ -2353,7 +2313,11 @@ class SharedSemanticDictionary:
         if self.path.exists():
             try:
                 with open(self.path) as f: self.entries = json.load(f)
-                _log(f"Semantic memory: {len(self.entries)} concepts")
+                # Pull the architect's persisted identity out of the word-space so
+                # it never pollutes lexical retrieval (it is not a "word").
+                self.identity = self.entries.pop("__identity__", {}) or {}
+                _log(f"Semantic memory: {len(self.entries)} concepts"
+                     + ("; architect identity recalled" if self.identity else ""))
             except Exception as e: _log(f"Semantic load failed: {e}")
 
     def alpha_write(self, word, region_scores, spike_count, tick, trust, pop_code=None):
@@ -2402,8 +2366,26 @@ class SharedSemanticDictionary:
 
     def _save(self):
         try:
-            with open(self.path,"w") as f: json.dump(self.entries,f,indent=2)
+            out = dict(self.entries)
+            if self.identity:                      # architect's face+voice live here too
+                out["__identity__"] = self.identity
+            with open(self.path,"w") as f: json.dump(out,f,indent=2)
         except Exception as ex: _log(f"Semantic save failed: {ex}")
+
+    def set_identity(self, **fields) -> None:
+        """Write/refresh the architect's identity (face/voice/kin templates +
+        trust) INTO semantic memory. Only non-None fields update, so a camera-off
+        (or mic-off) session never erases a known channel. Persisted immediately."""
+        changed = False
+        with self._lock:
+            for k, v in fields.items():
+                if v is not None:
+                    self.identity[k] = v; changed = True
+        if changed:
+            self._save()
+
+    def get_identity(self) -> dict:
+        return dict(self.identity)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5075,6 +5057,12 @@ class NeuromorphicBrain:
         # ── Personality seed ──────────────────────────────────────────────
         self._seed_personality()
 
+        # ── Recall the architect from semantic memory ─────────────────────
+        # His face + voice were written INTO semantic memory in a prior session,
+        # so Alpha does NOT relearn him from scratch — he boots already knowing
+        # the architect and keeps refining from there.
+        self._restore_identity()
+
         # ── Zero-copy audio buffer ────────────────────────────────────────
         self.audio_buf = ZeroCopyAudioBuffer()
 
@@ -5368,6 +5356,57 @@ class NeuromorphicBrain:
         V = float(self._phill_mem.mean().clamp(0.0, 1.0).item())
         return phill_spk, V
 
+    def _restore_identity(self) -> None:
+        """Seed the voice + multimodal templates FROM semantic memory (written in
+        a prior session), so the architect is recognised on boot — no relearning."""
+        try:
+            idn = self.sem.get_identity()
+        except Exception:
+            idn = {}
+        if not idn:
+            return
+        try:
+            vt = idn.get("voice_template")
+            if vt:
+                self.voice.template = np.array(vt, dtype=np.float32)
+                self.voice.trust    = float(idn.get("voice_trust", self.voice.trust))
+                self.voice.samples  = int(idn.get("voice_samples", self.voice.samples))
+                self.voice.locked   = bool(idn.get("voice_locked", self.voice.locked))
+            ft = idn.get("face_template")
+            if ft:
+                self.imprint.face_template = np.array(ft, dtype=np.float32)
+            ivt = idn.get("imprint_voice_template")
+            if ivt:
+                self.imprint.voice_template = np.array(ivt, dtype=np.float32)
+            kt = idn.get("kin_template")
+            if kt:
+                self.imprint.kin_template = np.array(kt, dtype=np.float32)
+            if idn.get("trusted") is not None:
+                self.imprint.trusted = bool(idn["trusted"])
+            _log(f"Architect recalled from semantic memory "
+                 f"(voice trust {self.voice.trust:.2f})")
+        except Exception as e:
+            _log(f"identity restore failed: {e}")
+
+    def _persist_identity(self) -> None:
+        """Write the architect's CURRENT face + voice templates back INTO semantic
+        memory (only the channels we actually have, so a mic-/camera-off session
+        never erases a known one). Cheap; called periodically and at sleep."""
+        try:
+            self.sem.set_identity(
+                name="architect",
+                voice_template=self.voice.template.tolist() if self.voice.template is not None else None,
+                voice_trust=float(self.voice.trust),
+                voice_samples=int(self.voice.samples),
+                voice_locked=bool(self.voice.locked),
+                face_template=self.imprint.face_template.tolist() if self.imprint.face_template is not None else None,
+                imprint_voice_template=self.imprint.voice_template.tolist() if self.imprint.voice_template is not None else None,
+                kin_template=self.imprint.kin_template.tolist() if self.imprint.kin_template is not None else None,
+                trusted=bool(self.imprint.trusted),
+            )
+        except Exception:
+            pass
+
     def _sleep_consolidate(self) -> None:
         """Replay episodes and consolidate them into the shared lexicon; let the
         neuromodulators relax toward baseline. Single brain (Alpha)."""
@@ -5395,6 +5434,12 @@ class NeuromorphicBrain:
         nm = self.alpha_neuro
         nm.da  = nm.da0  + (nm.da  - nm.da0)  * 0.97
         nm.ser = nm.ser0 + (nm.ser - nm.ser0) * 0.97
+        # Consolidate WHO the architect is into semantic memory while he sleeps,
+        # alongside the day's episodes.
+        try:
+            self._persist_identity()
+        except Exception:
+            pass
 
     def _get_visual_tensors(self) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor], bool]:
         if self._visual_buf is None:
@@ -6130,6 +6175,11 @@ class NeuromorphicBrain:
                  f"consolidated {self.alpha_episodic.consolidated}")
         if self.asleep:
             self._sleep_consolidate()
+
+        # Persist the architect's identity into semantic memory ~every 30s so it
+        # survives a crash/quit even if Alpha never sleeps.
+        if self.tick % 600 == 0:
+            self._persist_identity()
 
         # ── Reaching out (rare; Alpha speaks mainly when spoken to) ───────
         if not self.asleep:
