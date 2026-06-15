@@ -29,6 +29,8 @@ voice_esteem_*.json
 reason_links.json
 syntax_*.json
 conversation_log.jsonl
+voice_identity.json
+imprinter_state.json
 
 # ── Environment ──────────────────────────────────────────────────────
 .env

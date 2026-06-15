@@ -2107,6 +2107,11 @@ class VoiceIdentityLearner:
         self.trust = 0.0; self.samples = 0; self.locked = False
         self._sum = np.zeros(self.FEAT_DIM, dtype=np.float64)
         self._low_sim_run = 0   # consecutive low-sim speech frames
+        # Persist the voiceprint so Alpha gets used to the architect OVER TIME,
+        # across restarts — not re-meeting a stranger every launch.
+        self._save_path = Path("voice_identity.json")
+        self._save_n = 0
+        self._load()
         _log("VoiceIdentityLearner initialized")
 
     def update(self, features: list) -> float:
@@ -2125,6 +2130,7 @@ class VoiceIdentityLearner:
             self.trust = 0.5
             if self.samples >= self.MIN_SAMPLES and not self.locked:
                 self.locked = True; _log(f"Voice locked after {self.samples} frames")
+            self._save()
             return self.trust
         sim = float(np.dot(self.template, f_n))
         sim = max(0.0, sim)
@@ -2151,7 +2157,44 @@ class VoiceIdentityLearner:
                 self._low_sim_run = 0
         else:
             self._low_sim_run = 0
+        # Periodically persist the evolving voiceprint (every ~200 speech frames).
+        self._save_n += 1
+        if self._save_n % 200 == 0:
+            self._save()
         return self.trust
+
+    def _save(self):
+        try:
+            state = {
+                "template": self.template.tolist() if self.template is not None else None,
+                "trust":    float(self.trust),
+                "samples":  int(self.samples),
+                "locked":   bool(self.locked),
+                "sum":      self._sum.tolist(),
+            }
+            with open(self._save_path, "w") as f:
+                json.dump(state, f)
+        except Exception:
+            pass
+
+    def _load(self):
+        if not self._save_path.exists():
+            return
+        try:
+            with open(self._save_path) as f:
+                state = json.load(f)
+            if state.get("template"):
+                self.template = np.array(state["template"], dtype=np.float32)
+            self.trust   = float(state.get("trust", 0.0))
+            self.samples = int(state.get("samples", 0))
+            self.locked  = bool(state.get("locked", False))
+            s = state.get("sum")
+            if s is not None:
+                self._sum = np.array(s, dtype=np.float64)
+            if self.template is not None:
+                _log(f"Voice identity recalled: trust={self.trust:.2f}, {self.samples} frames seen")
+        except Exception:
+            pass
 
     def get_vec(self) -> Optional[np.ndarray]:
         return self.template.copy() if self.template is not None else None
