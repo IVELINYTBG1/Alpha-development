@@ -5509,6 +5509,17 @@ class NeuromorphicBrain:
                 self._learn_reasoning_path(snippet)
             except Exception:
                 pass
+            # Learn GRAMMAR from the tutor's well-formed teaching — Claude TEACHES
+            # sentence structure, it does NOT speak for Alpha. So the teacher's
+            # clean sentences train Alpha's own SyntaxCortex (his emergent speech
+            # gets better), without ever being voiced AS Alpha's reply.
+            try:
+                import re as _re_sx
+                _clean = _re_sx.sub(r"\[[^\]]*\]", " ", snippet)
+                _lt = self._corrector.correct(_clean) if getattr(self, "_corrector", None) else _clean
+                self.alpha_syntax.learn(_lt)
+            except Exception:
+                pass
         except Exception as e:
             _log(f"_on_search_result error: {e}")
 
