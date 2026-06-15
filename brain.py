@@ -1374,7 +1374,14 @@ class Amygdala:
         unfamiliar = (max(0.0, 0.5 - float(identity)) * 2.0) if face_present else 0.0
         emo        = min(1.0, float(insula_act) * 6.0)   # insula activity is small-valued
         salience   = (0.40 * startle + 0.30 * min(1.0, unfamiliar)
-                      + 0.18 * emo + 0.12 * float(surprise)) * self.reactivity
+                      + 0.10 * emo + 0.12 * float(surprise)) * self.reactivity
+        # A RECOGNISED architect is SAFE. His presence and ordinary movement are
+        # expected, not a threat — so damp salience hard by how strongly he is
+        # known. Alpha stays calm while the architect moves about; only the
+        # UNKNOWN (a stranger, or a real anomaly) still raises arousal. This is
+        # why he no longer spikes every time you move once he knows your face.
+        known = max(0.0, min(1.0, float(identity))) if face_present else 0.0
+        salience *= (1.0 - 0.70 * known)
         self.arousal = self.decay * self.arousal + (1.0 - self.decay) * min(1.0, salience)
         return self.arousal
 
