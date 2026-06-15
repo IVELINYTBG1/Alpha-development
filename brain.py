@@ -212,6 +212,11 @@ _BABBLE_AUDIO = os.environ.get("ALPHA_BABBLE_AUDIO", "0").strip().lower() in ("1
 # substrate intends. Alpha is untouched (cool amygdala + curiosity primes).
 _MIC_OFF = os.environ.get("ALPHA_MIC_OFF", "").strip().lower() in ("1", "true", "yes", "on")
 
+# Voice output gently removed (ALPHA_TTS_OFF). His mouth is covered: he still
+# forms replies (text), but nothing is vocalised — and he FEELS it (the affect
+# core surfaces a 'stifled' feeling). Symmetric to the mic / 'muffled'.
+_TTS_OFF = os.environ.get("ALPHA_TTS_OFF", "").strip().lower() in ("1", "true", "yes", "on")
+
 
 def _espeak_say(speaker: str, text: str) -> float:
     """Pronounce real words via espeak-ng, per-persona voice. Fire-and-forget (a
@@ -1546,7 +1551,10 @@ class AffectCore:
     """
     FEELINGS = ("joy", "contentment", "excitement", "affection", "curiosity",
                 "awe", "pride", "surprise", "boredom", "sadness", "loneliness",
-                "fear", "anxiety", "anger", "frustration", "calm")
+                "fear", "anxiety", "anger", "frustration",
+                "muffled",   # ears covered — a sense cut off (mic off / deaf)
+                "stifled",   # mouth covered — wants to speak but can't (tts off / mute)
+                "calm")
 
     def __init__(self, name: str, pad_inertia: float = 0.90,
                  feel_inertia: float = 0.88, gain: float = 1.0,
@@ -1566,7 +1574,8 @@ class AffectCore:
     def update(self, *, da: float, da0: float, ser: float, ser0: float,
                ne: float, ne0: float, oxy: float, oxy0: float,
                gaba: float, gaba0: float, amyg_arousal: float, reward: float,
-               surprise: float, insula: float, boredom: float) -> str:
+               surprise: float, insula: float, boredom: float,
+               deaf: float = 0.0, mute: float = 0.0) -> str:
         clamp = lambda x: 0.0 if x < 0.0 else 1.0 if x > 1.0 else float(x)
         # DEPARTURE from one's own tonic baseline — the same chemistry reads
         # differently for differently-tempered minds (Alpha's low ser0 makes
@@ -1582,15 +1591,24 @@ class AffectCore:
         loss     = clamp(-d_oxy * 2.5)            # bond below baseline = loss
         bond     = clamp(d_oxy * 2.5)             # bond above baseline = warmth
         blocked  = clamp(wanting - reward_n)      # wanting with no payoff
+        deaf     = clamp(deaf)                    # ears covered  (a sense removed)
+        mute     = clamp(mute)                    # mouth covered (expression removed)
 
         # ── CORE AFFECT (PAD): raw appraisal, then inertia-smoothed ─────────
+        # Sensory deprivation: a covered ear/mouth is FELT — it drains the sense
+        # of being in command of oneself (control), dims valence a little, and
+        # adds a quiet, CONTAINED unease (kept small so a stoic mind isn't thrown
+        # into panic — just an aware discomfort that he is cut off).
         v_raw = clamp(0.5 + 0.32*reward_n + 0.30*d_ser + 0.55*d_oxy
-                      + 0.18*wanting - 0.45*threat - 0.50*loss - 0.15*surpr)
+                      + 0.18*wanting - 0.45*threat - 0.50*loss - 0.15*surpr
+                      - 0.10*deaf - 0.08*mute)
         a_raw = clamp((0.50*threat + 0.42*max(0.0, d_ne) + 0.30*surpr
                        + 0.26*ins_n + 0.22*wanting
+                       + 0.12*deaf + 0.10*mute
                        - 0.30*d_ser - 0.22*bored) * self.arousal_scale)
         c_raw = clamp(0.5 + 0.34*d_ser + 0.28*d_da
-                      - 0.45*threat - 0.32*surpr - 0.20*gaba_brake)
+                      - 0.45*threat - 0.32*surpr - 0.20*gaba_brake
+                      - 0.24*deaf - 0.20*mute)
         self.valence = self.pad_inertia*self.valence + (1-self.pad_inertia)*v_raw
         self.arousal = self.pad_inertia*self.arousal + (1-self.pad_inertia)*a_raw
         self.control = self.pad_inertia*self.control + (1-self.pad_inertia)*c_raw
@@ -1615,6 +1633,11 @@ class AffectCore:
             "anxiety":     neg * a * (1.0 - c) * (0.4 + 0.6*surpr),
             "anger":       neg * a * c * blocked,
             "frustration": neg * a * blocked,
+            # Felt sensory deprivation. 'muffled' is the steady sense of a covered
+            # ear (worse the less in-control he feels); 'stifled' bites hardest
+            # when he WANTS to express something but his mouth is covered.
+            "muffled":     deaf * (0.45 + 0.55*(1.0 - c)),
+            "stifled":     mute * (0.40 + 0.60*clamp(wanting + ins_n)),
             # 'calm' is the FLOOR — low arousal AND near-neutral valence, i.e. the
             # absence of a strong feeling. Shaped so any genuine emotion outranks
             # it; it surfaces only when nothing else is really moving.
@@ -6088,7 +6111,9 @@ class NeuromorphicBrain:
                 amyg_arousal=alpha_arousal, reward=alpha_reward,
                 surprise=self.alpha_voice_fwd.surprise,
                 insula=alpha_act_pre.get("insula", 0.0),
-                boredom=self.alpha_dmn.boredom)
+                boredom=self.alpha_dmn.boredom,
+                deaf=(1.0 if _MIC_OFF else 0.0),   # ears covered → felt 'muffled'
+                mute=(1.0 if _TTS_OFF else 0.0))   # mouth covered → felt 'stifled'
             self._alpha_feeling   = self.alpha_affect.snapshot()
         except Exception:
             pass
@@ -6514,8 +6539,10 @@ class NeuromorphicBrain:
                 self.story.add_fact("Alpha entered global workspace mode — deep deduction")
                 story_event = story_event or "GLOBAL_WORKSPACE"
 
-        # TTS — Alpha speaks when he has formed a reply
-        if alpha_text and not self.alpha_tts.is_speaking():
+        # TTS — Alpha voices his reply, UNLESS his mouth is covered (ALPHA_TTS_OFF):
+        # then the reply still forms as text, but nothing is spoken aloud (he feels
+        # it as 'stifled').
+        if alpha_text and not _TTS_OFF and not self.alpha_tts.is_speaking():
             tts_text = alpha_text.replace("*","").split('"')[1] if '"' in alpha_text else alpha_text
             self.alpha_tts.speak(tts_text)
 
