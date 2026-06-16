@@ -5091,11 +5091,12 @@ class PersonalityThread(threading.Thread):
             # so the teacher was effectively never called.)
             if fired and not getattr(host, "asleep", False):
                 # Curiosity-mode fallback: if no specific target queued, ask
-                # about the currently-most-active concept in semantic memory.
+                # about the currently-most-active concept — but ONLY if he doesn't
+                # already know it well (count < 5). No re-asking learned words.
                 if query is None:
-                    query = host._peak_semantic_token()
-                    if query:
-                        query = f"what is {query}"
+                    pk = host._peak_semantic_token()
+                    if pk and host.sem.entries.get(pk, {}).get("count", 0) < 5:
+                        query = f"what is {pk}"
                 if query:
                     host._submit_search(self.persona_name, query, mode)
         except Exception as e:
@@ -5666,12 +5667,12 @@ class NeuromorphicBrain:
         now = time.time()
         # Don't re-ask an identical question within 90s (avoids spamming the
         # teacher when the peak token is sticky).
-        if now - self._recent_queries.get(query, 0.0) < 90.0:
+        if now - self._recent_queries.get(query, 0.0) < 600.0:
             return
         self._recent_queries[query] = now
         if len(self._recent_queries) > 64:
             self._recent_queries = {q: t for q, t in self._recent_queries.items()
-                                    if now - t < 90.0}
+                                    if now - t < 600.0}
         self._search_backend.submit(
             speaker, query,
             lambda who, res, _mode=mode: self._on_search_result(who, res, _mode),
