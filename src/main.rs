@@ -83,12 +83,18 @@ fn main() -> anyhow::Result<()> {
                 let l = l.strip_prefix("export ").unwrap_or(l);
                 if let Some((k, v)) = l.split_once('=') {
                     let k = k.trim();
-                    let mut v = v.trim();
-                    if v.len() >= 2
-                        && ((v.starts_with('"')  && v.ends_with('"'))
-                         || (v.starts_with('\'') && v.ends_with('\''))) {
-                        v = &v[1..v.len() - 1];
-                    }
+                    let v = v.trim();
+                    // Extract the value, tolerating an inline `# comment`:
+                    //  "val"  # c  → val   |   'val' # c → val   |   val # c → val
+                    let v = if v.starts_with('"') || v.starts_with('\'') {
+                        let q = v.as_bytes()[0] as char;
+                        match v[1..].find(q) {
+                            Some(end) => &v[1..1 + end],   // inside the quotes
+                            None      => &v[1..],
+                        }
+                    } else {
+                        v.split('#').next().unwrap_or(v).trim()   // drop inline comment
+                    };
                     if !k.is_empty() && std::env::var_os(k).is_none() {
                         std::env::set_var(k, v);
                     }
