@@ -3842,6 +3842,20 @@ class SpellCorrector:
         return "".join(out)
 
 
+# Low-content "glue" words. A well-formed phrase may CONTAIN them, but it should
+# never END (or start) on one — a thought that trails off on "or"/"is"/"my" reads
+# as broken ("Nodevortex is my or?"). Used to trim the composed utterance's edges.
+_FUNCTION_WORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "am",
+    "my", "your", "his", "her", "its", "our", "their", "this", "that", "these",
+    "those", "and", "or", "but", "nor", "so", "yet", "of", "to", "in", "on",
+    "at", "for", "with", "by", "from", "as", "if", "then", "than", "into",
+    "onto", "about", "it", "i", "you", "he", "she", "we", "they", "do", "does",
+    "did", "has", "have", "had", "will", "would", "can", "could", "should",
+    "may", "might", "must", "not", "no",
+}
+
+
 class SyntaxCortex:
     """
     Emergent sentence-sequencing — the syntactic role of Broca.
@@ -4051,6 +4065,17 @@ class SyntaxCortex:
                 if chosen is None:
                     chosen = free
         if not chosen or len(chosen) < 2:
+            return None
+        # Trim dangling glue words off both ends so the thought can't trail off on
+        # a connective ("… is my or"). Keep interior glue (it carries grammar).
+        wanted = set(want)
+        while len(chosen) > 1 and chosen[-1] in _FUNCTION_WORDS and chosen[-1] not in wanted:
+            chosen.pop()
+        while len(chosen) > 1 and chosen[0] in _FUNCTION_WORDS and chosen[0] not in wanted:
+            chosen.pop(0)
+        # If nothing contentful survived (no word she actually wanted to say),
+        # don't leak a fragment — stay quiet this cycle.
+        if len(chosen) < 2 or not any(w in wanted for w in chosen):
             return None
         return " ".join(chosen)
 
@@ -5284,6 +5309,7 @@ class NeuromorphicBrain:
         # Leaked thoughts queue for Rust to display
         self._leaked_thoughts: deque[tuple[str, str]] = deque(maxlen=20)
         self._leaked_lock      = threading.Lock()
+        self._recent_leaks: dict[str, int] = {}   # normalized thought → tick (anti-loop)
         # Proactive speech: leaks promoted to the MAIN CHAT (he chooses to speak out).
         self._proactive_q: deque[tuple[str, str]] = deque(maxlen=12)
         self._proactive_lock   = threading.Lock()
@@ -5645,6 +5671,21 @@ class NeuromorphicBrain:
         return face_t, kin_t, vf.face_present
 
     def _push_leaked_thought(self, who: str, thought: str):
+        # Repetition guard: don't leak the SAME thought again while it's still
+        # fresh in the pane. The greedy syntax walk is deterministic, so a sticky
+        # topic would otherwise emit a byte-identical line over and over ("X is
+        # my or?" on a loop). A thought may recur later, once it has aged out —
+        # the stream stays alive, it just stops stuttering.
+        norm = re.sub(r"[^a-z0-9 ]", "", (thought or "").lower()).strip()
+        norm = re.sub(r"\s+", " ", norm)
+        if norm:
+            last = self._recent_leaks.get(norm, -99999)
+            if (self.tick - last) < 600:            # ~30s at 20Hz
+                return
+            self._recent_leaks[norm] = self.tick
+            if len(self._recent_leaks) > 96:        # bound the map
+                cut = self.tick - 600
+                self._recent_leaks = {k: v for k, v in self._recent_leaks.items() if v > cut}
         with self._leaked_lock:
             self._leaked_thoughts.append((who, thought))
 
@@ -5704,7 +5745,11 @@ class NeuromorphicBrain:
                 spike_mean = float(ent.get("spike_mean", 0.0))
                 last_tick  = int(ent.get("last_tick", 0))
                 recency    = 1.0 / (1.0 + max(0, now_tick - last_tick) / 200.0)
-                score = spike_mean * recency
+                # Habituation demotes a concept he's been dwelling on, so the peak
+                # ROTATES instead of fixating on one sticky token (e.g. his name
+                # for the architect) and asking about it forever.
+                fresh = 1.0 - float(self._concept_hab.suppression(word))
+                score = spike_mean * recency * max(0.05, fresh)
                 if score > best_score:
                     best_word, best_score = word, score
             return best_word
@@ -6114,6 +6159,12 @@ class NeuromorphicBrain:
         brain_o  = self.alpha if is_alpha else self.alpha
         act      = brain_o.activity()
         peak     = self._peak_semantic_token() or ""
+        # Fatigue the topic the moment he wonders about it, so the NEXT self-
+        # question lands on something else — he moves on instead of asking the
+        # same thing on repeat (this holds even when the dedup guard later
+        # suppresses an identical leak, which would skip drain-time habituation).
+        if peak:
+            self._concept_hab.surface(peak)
         # The salient signal shapes WHAT she asks; the topic word is whatever is
         # most active in her right now. (Selection by salience, not canned text.)
         if kind == "concern":
