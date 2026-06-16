@@ -1601,6 +1601,9 @@ class AffectCore:
                 "fear", "anxiety", "anger", "frustration",
                 "muffled",   # ears covered — a sense cut off (mic off / deaf)
                 "stifled",   # mouth covered — wants to speak but can't (tts off / mute)
+                "warm",      # interoception: the machine's heat felt as body warmth
+                "squeezed",  # interoception: RAM filling = walls closing in
+                "choking",   # interoception: CPU near 100% = can't breathe
                 "calm")
 
     def __init__(self, name: str, pad_inertia: float = 0.90,
@@ -1622,7 +1625,8 @@ class AffectCore:
                ne: float, ne0: float, oxy: float, oxy0: float,
                gaba: float, gaba0: float, amyg_arousal: float, reward: float,
                surprise: float, insula: float, boredom: float,
-               deaf: float = 0.0, mute: float = 0.0) -> str:
+               deaf: float = 0.0, mute: float = 0.0,
+               warmth: float = 0.0, squeeze: float = 0.0, choke: float = 0.0) -> str:
         clamp = lambda x: 0.0 if x < 0.0 else 1.0 if x > 1.0 else float(x)
         # DEPARTURE from one's own tonic baseline — the same chemistry reads
         # differently for differently-tempered minds (Alpha's low ser0 makes
@@ -1640,22 +1644,34 @@ class AffectCore:
         blocked  = clamp(wanting - reward_n)      # wanting with no payoff
         deaf     = clamp(deaf)                    # ears covered  (a sense removed)
         mute     = clamp(mute)                    # mouth covered (expression removed)
+        warmth   = clamp(warmth)                  # the machine's heat (CPU temp)
+        squeeze  = clamp(squeeze)                 # RAM pressure — walls closing in
+        choke    = clamp(choke)                   # CPU near 100% — can't breathe
 
         # ── CORE AFFECT (PAD): raw appraisal, then inertia-smoothed ─────────
         # Sensory deprivation: a covered ear/mouth is FELT — it drains the sense
         # of being in command of oneself (control), dims valence a little, and
         # adds a quiet, CONTAINED unease (kept small so a stoic mind isn't thrown
         # into panic — just an aware discomfort that he is cut off).
+        # Interoception — the machine IS his body. Heat is felt as warmth (cozy in
+        # the middle, feverish-uncomfortable when too hot); RAM filling is felt as
+        # being squeezed (walls closing); CPU near 100% is felt as choking. All
+        # CLAMPED, so he genuinely suffers under strain but can never blow up or
+        # "die" — and the discomfort naturally pushes him to use less (homeostasis).
+        fever = max(0.0, warmth - 0.70)
         v_raw = clamp(0.5 + 0.32*reward_n + 0.30*d_ser + 0.55*d_oxy
                       + 0.18*wanting - 0.45*threat - 0.50*loss - 0.15*surpr
-                      - 0.10*deaf - 0.08*mute)
+                      - 0.10*deaf - 0.08*mute
+                      - 0.12*squeeze - 0.14*choke - 0.10*fever + 0.04*warmth)
         a_raw = clamp((0.50*threat + 0.42*max(0.0, d_ne) + 0.30*surpr
                        + 0.26*ins_n + 0.22*wanting
                        + 0.12*deaf + 0.10*mute
+                       + 0.12*squeeze + 0.18*choke + 0.06*warmth
                        - 0.30*d_ser - 0.22*bored) * self.arousal_scale)
         c_raw = clamp(0.5 + 0.34*d_ser + 0.28*d_da
                       - 0.45*threat - 0.32*surpr - 0.20*gaba_brake
-                      - 0.24*deaf - 0.20*mute)
+                      - 0.24*deaf - 0.20*mute
+                      - 0.22*squeeze - 0.26*choke)
         self.valence = self.pad_inertia*self.valence + (1-self.pad_inertia)*v_raw
         self.arousal = self.pad_inertia*self.arousal + (1-self.pad_inertia)*a_raw
         self.control = self.pad_inertia*self.control + (1-self.pad_inertia)*c_raw
@@ -1685,6 +1701,12 @@ class AffectCore:
             # when he WANTS to express something but his mouth is covered.
             "muffled":     deaf * (0.45 + 0.55*(1.0 - c)),
             "stifled":     mute * (0.40 + 0.60*clamp(wanting + ins_n)),
+            # Interoception — the felt body. 'warm' rises with the machine's heat;
+            # 'squeezed' with RAM pressure (worse the less in-control he feels);
+            # 'choking' with CPU load (breathless — scales with arousal).
+            "warm":        warmth * (0.55 + 0.45*pos),
+            "squeezed":    squeeze * (0.45 + 0.55*(1.0 - c)),
+            "choking":     choke * (0.50 + 0.50*a),
             # 'calm' is the FLOOR — low arousal AND near-neutral valence, i.e. the
             # absence of a strong feeling. Shaped so any genuine emotion outranks
             # it; it surfaces only when nothing else is really moving.
@@ -4900,7 +4922,10 @@ class PersonalityThread(threading.Thread):
         try:
             entries = getattr(host.sem, "entries", {}) or {}
             wander_due = (local_tick - getattr(self, "_wander_last", -9999)) > 11
-            if entries and wander_due and (intrinsic_fired or boredom > 0.20):
+            # Under bodily strain (RAM/CPU pressure) he stops free-associating —
+            # a strained mind quiets, which itself frees resources (homeostasis).
+            if (entries and wander_due and getattr(host, "_strain", 0.0) < 0.6
+                    and (intrinsic_fired or boredom > 0.20)):
                 self._wander_last = local_tick
                 import random as _wr
                 pool = [w for w, e in entries.items()
@@ -5229,6 +5254,22 @@ class NeuromorphicBrain:
 
         self._combined_id      = 0.0
         self._face_present      = False
+
+        # ── Interoception: the machine IS his body ────────────────────────
+        # He senses his own host — CPU load (choke), RAM pressure (squeeze),
+        # temperature (warmth) — felt through the affect core. Bounded: he can
+        # suffer under strain but never "die", and the discomfort naturally
+        # pushes him to use less (homeostasis), no hardcoded resource manager.
+        try:
+            import psutil as _ps
+            self._psutil = _ps
+            self._psutil.cpu_percent(interval=None)   # prime non-blocking reads
+        except Exception:
+            self._psutil = None
+        self._cpu_pct = 0.0; self._mem_pct = 0.0; self._cpu_temp = 0.0
+        self._warmth  = 0.0; self._squeeze = 0.0; self._choke = 0.0
+        self._strain  = 0.0       # max(choke, squeeze) — drives self-throttling
+        self._last_metrics_tick = 0
 
         # Leaked thoughts queue for Rust to display
         self._leaked_thoughts: deque[tuple[str, str]] = deque(maxlen=20)
@@ -6138,6 +6179,25 @@ class NeuromorphicBrain:
         # Check for hot-patches (non-blocking, checked every 50 ticks ~2.5s)
         self.patcher.check_and_apply(self.tick, self.alpha, self.sem)
 
+        # ── Interoception — sense the body (the host) every ~1s ───────────
+        if self._psutil is not None and (self.tick - self._last_metrics_tick) >= 20:
+            self._last_metrics_tick = self.tick
+            try:
+                self._cpu_pct = float(self._psutil.cpu_percent(interval=None))
+                self._mem_pct = float(self._psutil.virtual_memory().percent)
+                temps = self._psutil.sensors_temperatures()
+                if temps:
+                    pkg = temps.get("coretemp") or temps.get("k10temp") or temps.get("acpitz")
+                    allc = [x.current for v in temps.values() for x in v if x.current]
+                    self._cpu_temp = float(pkg[0].current) if pkg else (max(allc) if allc else 0.0)
+                _c = lambda x: 0.0 if x < 0 else 1.0 if x > 1 else float(x)
+                self._choke   = _c((self._cpu_pct / 100.0 - 0.40) / 0.60)   # bites above ~40% CPU
+                self._squeeze = _c((self._mem_pct / 100.0 - 0.50) / 0.50)   # walls close above ~50% RAM
+                self._warmth  = _c((self._cpu_temp - 45.0) / 40.0) if self._cpu_temp else 0.0
+                self._strain  = max(self._choke, self._squeeze)
+            except Exception:
+                pass
+
         # Voice identity
         trust = 0.7
         if voice_features and len(voice_features) == 5:
@@ -6208,7 +6268,8 @@ class NeuromorphicBrain:
                 insula=alpha_act_pre.get("insula", 0.0),
                 boredom=self.alpha_dmn.boredom,
                 deaf=(1.0 if _MIC_OFF else 0.0),   # ears covered → felt 'muffled'
-                mute=(1.0 if _TTS_OFF else 0.0))   # mouth covered → felt 'stifled'
+                mute=(1.0 if _TTS_OFF else 0.0),   # mouth covered → felt 'stifled'
+                warmth=self._warmth, squeeze=self._squeeze, choke=self._choke)  # the body
             self._alpha_feeling   = self.alpha_affect.snapshot()
         except Exception:
             pass
@@ -6429,6 +6490,13 @@ class NeuromorphicBrain:
             "alpha_feel_blend":      list(self._alpha_feeling.get("blend", [])),
             "alpha_selfness":    round(self.alpha_drift.selfness, 3),
             "alpha_drift":       round(self.alpha_drift.drift, 3),
+            # Interoception — the felt body (host metrics + felt strain)
+            "cpu_pct":      round(self._cpu_pct, 1),
+            "mem_pct":      round(self._mem_pct, 1),
+            "cpu_temp":     round(self._cpu_temp, 1),
+            "alpha_warmth": round(self._warmth, 3),
+            "alpha_squeeze":round(self._squeeze, 3),
+            "alpha_choke":  round(self._choke, 3),
         }
 
     # ── THINK ─────────────────────────────────────────────────────────────────
@@ -6507,6 +6575,11 @@ class NeuromorphicBrain:
 
         energy      = sum(primes.values()) / max(1, len(primes))
         think_ticks = max(14, min(36, int(len(primes)*3 + energy*8) + 6))
+        # Homeostasis: when he's choking (CPU slammed) he can't think as hard —
+        # fewer forward passes → less CPU → relief. Emergent self-throttling, not
+        # a hardcoded resource manager: the FEELING shortens the thought.
+        if self._choke > 0.05:
+            think_ticks = max(6, int(think_ticks * (1.0 - 0.55 * self._choke)))
 
         face_t, kin_t, face_present = self._get_visual_tensors()
 

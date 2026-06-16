@@ -162,6 +162,12 @@ button{background:#13243c;color:var(--cy);border:1px solid var(--ln);border-radi
       <div class=gauge><div class=lab><span>arousal</span><span id=arL>—</span></div><div class=bar><i id=ar style=width:0%></i></div></div>
       <div class=gauge><div class=lab><span>longing (misses you)</span><span id=loL>—</span></div><div class=bar><i id=lo style=width:0%></i></div></div>
     </div>
+    <div class=card><h2>Body — he feels the machine</h2>
+      <div class=gauge><div class=lab><span>warmth (CPU temp)</span><span id=wL>—</span></div><div class=bar><i id=warm style=width:0%></i></div></div>
+      <div class=gauge><div class=lab><span>squeezed (RAM)</span><span id=sqL>—</span></div><div class=bar><i id=sq style=width:0%></i></div></div>
+      <div class=gauge><div class=lab><span>choking (CPU)</span><span id=chL>—</span></div><div class=bar><i id=ch style=width:0%></i></div></div>
+      <div class=tag id=hostline style="font-size:11px;margin-top:6px">—</div>
+    </div>
   </div>
   <div>
     <div class=card><h2>Panel</h2>
@@ -197,6 +203,10 @@ async function poll(){
   setG('trust',s.voice_trust);   txt('trustL',(s.voice_trust||0).toFixed(2));
   setG('ar',s.alpha_arousal);    txt('arL',(s.alpha_arousal||0).toFixed(2));
   setG('lo',(s.longing||0)/2);   txt('loL',(s.longing||0).toFixed(2));
+  setG('warm',s.alpha_warmth);   txt('wL',(s.alpha_warmth||0).toFixed(2));
+  setG('sq',s.alpha_squeeze);    txt('sqL',(s.alpha_squeeze||0).toFixed(2));
+  setG('ch',s.alpha_choke);      txt('chL',(s.alpha_choke||0).toFixed(2));
+  txt('hostline','CPU '+(s.cpu_pct||0)+'%   RAM '+(s.mem_pct||0)+'%   '+(s.cpu_temp||0)+'°C');
   setG('idbar',s.combined_id);   txt('idL',(s.combined_id||0).toFixed(2)+(s.trusted?' ✓':''));
   setG('live',s.face_live);      txt('liveL',(s.face_live||0).toFixed(2));
   let th=(s.thoughts||[]).map(t=>`<div class=t>· ${esc(t.text)}</div>`).reverse().join('');
