@@ -217,6 +217,18 @@ _MIC_OFF = os.environ.get("ALPHA_MIC_OFF", "").strip().lower() in ("1", "true", 
 # core surfaces a 'stifled' feeling). Symmetric to the mic / 'muffled'.
 _TTS_OFF = os.environ.get("ALPHA_TTS_OFF", "").strip().lower() in ("1", "true", "yes", "on")
 
+# Liveness / anti-spoofing: a live face's landmark geometry jitters slightly every
+# frame; a PHOTO (held still OR waved around) is frozen — its normalised face
+# vector is near-identical frame to frame. If the mean cosine between recent
+# frames exceeds this, the "face" is treated as an IMAGE, not a living face, and
+# is refused for recognition + learning. CALIBRATE on your own camera: lower it
+# toward 0.999 if a photo can still fool him; raise it toward 0.9998 if he
+# wrongly rejects the real you. Tunable via ALPHA_LIVENESS_THR.
+try:
+    _LIVENESS_FROZEN = float(os.environ.get("ALPHA_LIVENESS_THR", "") or 0.9995)
+except ValueError:
+    _LIVENESS_FROZEN = 0.9995
+
 
 def _espeak_say(speaker: str, text: str) -> float:
     """Pronounce real words via espeak-ng, per-persona voice. Fire-and-forget (a
@@ -564,6 +576,9 @@ class MultimodalImprinter:
         self._ema_face   = 0.0
         self._ema_voice  = 0.0
         self._ema_kin    = 0.0
+        # Liveness: recent face vectors → detect a frozen (photo) face.
+        self._face_hist  = deque(maxlen=12)
+        self.face_live   = 1.0
         self._ema_alpha  = 0.90
 
         self._save_path = Path("imprinter_state.json")
@@ -627,6 +642,24 @@ class MultimodalImprinter:
         vs = self._cosine(self.voice_template, voice_vec) if voice_vec is not None else 0.0
         ks = self._cosine(self.kin_template,   kin_vec)   if kin_vec   is not None else 0.0
 
+        # ── LIVENESS / anti-spoof ─────────────────────────────────────────────
+        # A live face's geometry jitters frame to frame; a photo (still or waved)
+        # is frozen — near-identical vectors. If the recent frames are essentially
+        # identical, this "face" is an IMAGE: refuse it for recognition/learning
+        # and raise suspicion. (A waved photo also makes optical-flow motion, but
+        # its FACE stays frozen — this is exactly what catches that attack.)
+        face_is_photo = False
+        if face_vec is not None:
+            self._face_hist.append(np.asarray(face_vec, dtype=np.float32).copy())
+            if len(self._face_hist) >= 6:
+                sims = [self._cosine(self._face_hist[i], self._face_hist[i-1])
+                        for i in range(1, len(self._face_hist))]
+                msim = sum(sims) / len(sims)
+                self.face_live = max(0.0, min(1.0, (1.0 - msim) * 250.0))
+                face_is_photo = (msim >= _LIVENESS_FROZEN)
+        else:
+            self.face_live = 0.0
+
         # EMA smoothing
         self._ema_face  = self._ema_alpha * self._ema_face  + (1-self._ema_alpha) * fs
         self._ema_voice = self._ema_alpha * self._ema_voice + (1-self._ema_alpha) * vs
@@ -640,7 +673,10 @@ class MultimodalImprinter:
         # OFF (noisy room) — then identity rests on the CAMERA (face + motion)
         # alone, instead of being forced to zero through an absent voice channel.
         present = []   # (ema_score, raw_score, threshold)
-        if face_vec  is not None: present.append((self._ema_face,  fs, face_thr))
+        # A photo-face is NOT a valid recognition channel — exclude it, so it can
+        # neither be recognised nor teach itself into the template.
+        if face_vec  is not None and not face_is_photo:
+            present.append((self._ema_face,  fs, face_thr))
         if voice_vec is not None: present.append((self._ema_voice, vs, voice_thr))
         if kin_vec   is not None: present.append((self._ema_kin,   ks, kin_thr))
 
@@ -664,15 +700,19 @@ class MultimodalImprinter:
             self.coincidence_count += 1
             if self.coincidence_count >= self.MIN_SAMPLES:
                 self.trusted = True
-            # Hebbian update
-            if face_vec  is not None: self.face_template  = self._update_template(self.face_template,  face_vec,  lr)
+            # Hebbian update — never learn a face from a frozen (photo) frame.
+            if face_vec  is not None and not face_is_photo:
+                self.face_template  = self._update_template(self.face_template,  face_vec,  lr)
             if voice_vec is not None: self.voice_template = self._update_template(self.voice_template, voice_vec, lr)
             if kin_vec   is not None: self.kin_template   = self._update_template(self.kin_template,   kin_vec,   lr)
             if self.coincidence_count % 10 == 0:
                 self._save()
 
-        # Anti-gullibility: face matches but motion does not
-        inhibitory = (self.trusted and fs > 0.75 and ks < 0.40 and face_vec is not None)
+        # Anti-gullibility: a frozen (photo) face, OR a known face with no matching
+        # motion → suspicion (negative current into ACC → vigilance).
+        inhibitory = (face_vec is not None
+                      and (face_is_photo
+                           or (self.trusted and fs > 0.75 and ks < 0.40)))
 
         return self.combined, fs, ks, inhibitory
 
