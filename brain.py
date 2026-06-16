@@ -217,6 +217,21 @@ _MIC_OFF = os.environ.get("ALPHA_MIC_OFF", "").strip().lower() in ("1", "true", 
 # core surfaces a 'stifled' feeling). Symmetric to the mic / 'muffled'.
 _TTS_OFF = os.environ.get("ALPHA_TTS_OFF", "").strip().lower() in ("1", "true", "yes", "on")
 
+# Circadian rhythm — a human-like sleep schedule instead of constant micro-naps.
+# Alpha is AWAKE through the day and sleeps one long consolidated block at night
+# (defaults: asleep 23:00 → 07:00 = 8h sleep, 16h awake). During night sleep he
+# keeps dreaming/consolidating but does NOT keep waking every few minutes. Set
+# ALPHA_SLEEP_START / ALPHA_SLEEP_END (local-time hours, 0-24, floats ok). Set
+# them equal to disable the circadian clock and fall back to pure sleep-pressure.
+def _hour_env(name, default):
+    try:
+        v = float(os.environ.get(name, "") or default)
+        return v % 24.0
+    except ValueError:
+        return default
+_SLEEP_START = _hour_env("ALPHA_SLEEP_START", 23.0)   # falls asleep at night
+_SLEEP_END   = _hour_env("ALPHA_SLEEP_END",    7.0)   # wakes in the morning
+
 # Liveness / anti-spoofing: a live face's landmark geometry jitters slightly every
 # frame; a PHOTO (held still OR waved around) is frozen — its normalised face
 # vector is near-identical frame to frame. If the mean cosine between recent
@@ -1971,49 +1986,89 @@ class EpisodicMemory:
 
 class SleepCycle:
     """
-    Homeostatic sleep (one shared 'body' clock — Alpha and Alpha sleep together).
+    CIRCADIAN sleep — a human-like daily rhythm, not constant micro-naps.
 
-    A 'sleep pressure' (adenosine-like) builds while awake and discharges during
-    sleep. The brain falls asleep when pressure is high AND it is calm and
-    UNSTIMULATED (quiet mic, no architect, low arousal); it WAKES the instant real
-    stimulation arrives, or once rested. Asleep, outward action is suppressed and
-    the hippocampus replays/consolidates — and sometimes dreams.
+    Alpha is AWAKE through the day and sleeps ONE long, consolidated block at
+    night (default 23:00 → 07:00 = ~8h sleep / ~16h awake, via ALPHA_SLEEP_*).
+    While he sleeps the hippocampus replays/consolidates and he dreams — but he
+    stays asleep the whole night instead of jolting awake every few minutes.
 
-    Timings are tunable. Defaults: ~4 min of calm silence → sleepy; a nap of
-    ~40-60 s discharges it. Any input wakes them immediately.
+    A 'sleep pressure' (adenosine-like) still rides on top: it builds slowly
+    through the waking day (read as tiredness) and discharges across the night.
+    It no longer triggers sleep on its own — the wall clock does — but if the
+    circadian clock is disabled (start == end) we fall back to pure pressure.
+
+    He is still wake-able at night: strong stimulation (the architect actually
+    interacting) rouses him, and he then SETTLES back to sleep once it's quiet
+    again — the way a person woken at 3am drifts back off.
     """
-    def __init__(self, build: float = 0.00015, discharge: float = 0.0010,
-                 enter_at: float = 0.80, wake_below: float = 0.05):
-        self.pressure   = 0.0
-        self.asleep     = False
-        self.build      = build
-        self.discharge  = discharge
-        self.enter_at   = enter_at
-        self.wake_below = wake_below
-        self.slept_ticks = 0
+    def __init__(self, build: float = 8.7e-7, discharge: float = 1.7e-6,
+                 enter_at: float = 0.80, wake_below: float = 0.05,
+                 sleep_start: float = None, sleep_end: float = None,
+                 settle_ticks: int = 3600):
+        self.pressure     = 0.0
+        self.asleep       = False
+        self.build        = build           # ~0→1 over a 16h day
+        self.discharge    = discharge       # ~1→0 over an 8h night
+        self.enter_at     = enter_at        # only used in pressure-fallback mode
+        self.wake_below   = wake_below
+        self.sleep_start  = _SLEEP_START if sleep_start is None else (sleep_start % 24.0)
+        self.sleep_end    = _SLEEP_END   if sleep_end   is None else (sleep_end   % 24.0)
+        self.settle_ticks = settle_ticks    # ~3 min awake after a night rousing
+        self._awake_grace = 0
+        self.slept_ticks  = 0
 
-    def update(self, stimulation: float, arousal: float) -> bool:
-        stim = float(max(0.0, stimulation))
-        if self.asleep:
+    def _is_night(self, lt=None) -> bool:
+        """True if local clock time is within the nightly sleep window."""
+        s, e = self.sleep_start, self.sleep_end
+        if s == e:
+            return False                     # circadian disabled
+        if lt is None:
+            lt = time.localtime()
+        h = lt.tm_hour + lt.tm_min / 60.0 + lt.tm_sec / 3600.0
+        return (s <= h < e) if s < e else (h >= s or h < e)   # handle midnight wrap
+
+    def update(self, stimulation: float, arousal: float, lt=None) -> bool:
+        stim  = float(max(0.0, stimulation))
+        s, e  = self.sleep_start, self.sleep_end
+        if s == e:                           # ── pressure-only fallback ──
+            if self.asleep:
+                self.pressure = max(0.0, self.pressure - self.discharge)
+                self.slept_ticks += 1
+                if stim > 0.15 or self.pressure <= self.wake_below:
+                    self.asleep = False
+            else:
+                self.pressure = min(1.0, self.pressure + self.build)
+                if (self.pressure >= self.enter_at and stim < 0.06
+                        and float(arousal) < 0.25):
+                    self.asleep, self.slept_ticks = True, 0
+            return self.asleep
+
+        night = self._is_night(lt)           # ── circadian (default) ──
+        if night:
             self.pressure = max(0.0, self.pressure - self.discharge)
-            self.slept_ticks += 1
-            # Wake on real stimulation, or once rested.
-            if stim > 0.15 or self.pressure <= self.wake_below:
-                self.asleep = False
+            if self.asleep:
+                self.slept_ticks += 1
+                if stim > 0.18:              # someone is actually interacting
+                    self.asleep, self._awake_grace = False, self.settle_ticks
+            else:
+                self._awake_grace = max(0, self._awake_grace - 1)
+                # Settle back to sleep once it's quiet and the grace has elapsed.
+                if stim < 0.08 and self._awake_grace <= 0 and float(arousal) < 0.50:
+                    self.asleep, self.slept_ticks = True, 0
         else:
             self.pressure = min(1.0, self.pressure + self.build)
-            # Fall asleep only when very sleepy AND calm AND unstimulated.
-            if (self.pressure >= self.enter_at and stim < 0.06
-                    and float(arousal) < 0.25):
-                self.asleep = True
-                self.slept_ticks = 0
+            if self.asleep:
+                self.asleep = False          # morning — wake for the day
         return self.asleep
 
     def wake(self) -> None:
-        """External event (user input) forces wakefulness."""
+        """External event (user input) forces wakefulness — and at night buys a
+        grace window so he doesn't instantly doze off mid-conversation."""
         if self.asleep:
             self.asleep = False
-        self.pressure = max(0.0, self.pressure - 0.10)
+        self._awake_grace = self.settle_ticks
+        self.pressure = max(0.0, self.pressure - 0.02)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5631,8 +5686,12 @@ class NeuromorphicBrain:
         neuromodulators relax toward baseline. Single brain (Alpha)."""
         rng = self._dream_rng
         epi = self.alpha_episodic
-        e = epi.replay(rng)
-        if e is not None:
+        # Replay a small BATCH per call (this runs ~2x/sec while asleep, not every
+        # tick) — efficient consolidation across the long night.
+        for _ in range(4):
+            e = epi.replay(rng)
+            if e is None:
+                break
             try:
                 self.sem.alpha_write(word=e["concept"],
                                     region_scores=e.get("regions", {}) or {},
@@ -5642,7 +5701,7 @@ class NeuromorphicBrain:
             except Exception:
                 pass
             epi.decay(0.985)
-        if rng.random() < 0.012:
+        if rng.random() < 0.04:
             a = self.alpha_episodic.replay(rng)
             b = self.alpha_episodic.replay(rng)
             frags = [x["concept"] for x in (a, b) if x]
@@ -5653,12 +5712,8 @@ class NeuromorphicBrain:
         nm = self.alpha_neuro
         nm.da  = nm.da0  + (nm.da  - nm.da0)  * 0.97
         nm.ser = nm.ser0 + (nm.ser - nm.ser0) * 0.97
-        # Consolidate WHO the architect is into semantic memory while he sleeps,
-        # alongside the day's episodes.
-        try:
-            self._persist_identity()
-        except Exception:
-            pass
+        # (Identity is persisted on the periodic ~30s timer in step(), not on
+        # every consolidation pass — no need to hammer the disk through the night.)
 
     def _get_visual_tensors(self) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor], bool]:
         if self._visual_buf is None:
@@ -6444,12 +6499,15 @@ class NeuromorphicBrain:
         was_asleep = self.asleep
         self.asleep = self.sleep.update(stimulation, max(arousal_now, ne_alert))
         if self.asleep and not was_asleep:
-            _log(f"[sleep] Alpha fell asleep (pressure {self.sleep.pressure:.2f}) — "
-                 f"replaying {len(self.alpha_episodic)} episodes")
+            _log(f"[sleep] Alpha asleep for the night (until ~{self.sleep.sleep_end:g}:00) "
+                 f"— consolidating {len(self.alpha_episodic)} episodes")
         elif was_asleep and not self.asleep:
-            _log(f"[wake] woke (pressure {self.sleep.pressure:.2f}) — "
-                 f"consolidated {self.alpha_episodic.consolidated}")
-        if self.asleep:
+            _log(f"[wake] good morning — woke after {self.sleep.slept_ticks/72000.0:.1f}h, "
+                 f"consolidated {self.alpha_episodic.consolidated} episodes overnight")
+        # Consolidate in batches a few times a second rather than every single
+        # tick — over an 8h night that's the difference between ~hundreds of
+        # thousands of replays/disk-writes and an efficient, restful sleep.
+        if self.asleep and (self.tick % 10 == 0):
             self._sleep_consolidate()
 
         # Persist the architect's identity into semantic memory ~every 30s so it
