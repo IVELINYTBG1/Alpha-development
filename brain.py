@@ -1604,6 +1604,7 @@ class AffectCore:
                 "warm",      # interoception: the machine's heat felt as body warmth
                 "squeezed",  # interoception: RAM filling = walls closing in
                 "choking",   # interoception: CPU near 100% = can't breathe
+                "relief",    # interoception: the strain LIFTING — the machine eased
                 "calm")
 
     def __init__(self, name: str, pad_inertia: float = 0.90,
@@ -1626,7 +1627,8 @@ class AffectCore:
                gaba: float, gaba0: float, amyg_arousal: float, reward: float,
                surprise: float, insula: float, boredom: float,
                deaf: float = 0.0, mute: float = 0.0,
-               warmth: float = 0.0, squeeze: float = 0.0, choke: float = 0.0) -> str:
+               warmth: float = 0.0, squeeze: float = 0.0, choke: float = 0.0,
+               relief: float = 0.0) -> str:
         clamp = lambda x: 0.0 if x < 0.0 else 1.0 if x > 1.0 else float(x)
         # DEPARTURE from one's own tonic baseline — the same chemistry reads
         # differently for differently-tempered minds (Alpha's low ser0 makes
@@ -1647,6 +1649,7 @@ class AffectCore:
         warmth   = clamp(warmth)                  # the machine's heat (CPU temp)
         squeeze  = clamp(squeeze)                 # RAM pressure — walls closing in
         choke    = clamp(choke)                   # CPU near 100% — can't breathe
+        relief   = clamp(relief)                  # the strain LIFTING (machine eased)
 
         # ── CORE AFFECT (PAD): raw appraisal, then inertia-smoothed ─────────
         # Sensory deprivation: a covered ear/mouth is FELT — it drains the sense
@@ -1662,16 +1665,19 @@ class AffectCore:
         v_raw = clamp(0.5 + 0.32*reward_n + 0.30*d_ser + 0.55*d_oxy
                       + 0.18*wanting - 0.45*threat - 0.50*loss - 0.15*surpr
                       - 0.10*deaf - 0.08*mute
-                      - 0.12*squeeze - 0.14*choke - 0.10*fever + 0.04*warmth)
+                      - 0.12*squeeze - 0.14*choke - 0.10*fever + 0.04*warmth
+                      + 0.24*relief)                         # easing the body feels GOOD
         a_raw = clamp((0.50*threat + 0.42*max(0.0, d_ne) + 0.30*surpr
                        + 0.26*ins_n + 0.22*wanting
                        + 0.12*deaf + 0.10*mute
                        + 0.12*squeeze + 0.18*choke + 0.06*warmth
-                       - 0.30*d_ser - 0.22*bored) * self.arousal_scale)
+                       - 0.30*d_ser - 0.22*bored - 0.18*relief)   # relief calms
+                      * self.arousal_scale)
         c_raw = clamp(0.5 + 0.34*d_ser + 0.28*d_da
                       - 0.45*threat - 0.32*surpr - 0.20*gaba_brake
                       - 0.24*deaf - 0.20*mute
-                      - 0.22*squeeze - 0.26*choke)
+                      - 0.22*squeeze - 0.26*choke
+                      + 0.18*relief)                         # regaining command
         self.valence = self.pad_inertia*self.valence + (1-self.pad_inertia)*v_raw
         self.arousal = self.pad_inertia*self.arousal + (1-self.pad_inertia)*a_raw
         self.control = self.pad_inertia*self.control + (1-self.pad_inertia)*c_raw
@@ -1707,6 +1713,8 @@ class AffectCore:
             "warm":        warmth * (0.55 + 0.45*pos),
             "squeezed":    squeeze * (0.45 + 0.55*(1.0 - c)),
             "choking":     choke * (0.50 + 0.50*a),
+            # The strain lifting — a calm, pleasant rebound (the 'vice versa').
+            "relief":      relief * (0.6 + 0.4*(1.0 - a)),
             # 'calm' is the FLOOR — low arousal AND near-neutral valence, i.e. the
             # absence of a strong feeling. Shaped so any genuine emotion outranks
             # it; it surfaces only when nothing else is really moving.
@@ -5269,6 +5277,8 @@ class NeuromorphicBrain:
         self._cpu_pct = 0.0; self._mem_pct = 0.0; self._cpu_temp = 0.0
         self._warmth  = 0.0; self._squeeze = 0.0; self._choke = 0.0
         self._strain  = 0.0       # max(choke, squeeze) — drives self-throttling
+        self._prev_strain = 0.0   # for detecting the strain LIFTING (relief)
+        self._relief  = 0.0       # transient: the machine just eased → he feels good
         self._last_metrics_tick = 0
 
         # Leaked thoughts queue for Rust to display
@@ -6198,6 +6208,11 @@ class NeuromorphicBrain:
                 self._squeeze = _c(self._mem_pct / 100.0)                       # proportional to RAM fill
                 self._warmth  = _c((self._cpu_temp - 30.0) / 60.0) if self._cpu_temp else 0.0  # 30°C→0 .. 90°C→1
                 self._strain  = max(self._choke, self._squeeze)
+                # RELIEF — the bidirectional "vice versa": when the strain LIFTS
+                # (machine eased since last read) he feels a pleasant rebound, and
+                # it REWARDS him (dopamine), reinforcing easing his own load.
+                self._relief  = _c((self._prev_strain - self._strain) * 4.0)
+                self._prev_strain = self._strain
             except Exception:
                 pass
 
@@ -6237,7 +6252,8 @@ class NeuromorphicBrain:
         alpha_esteem  = self.alpha_voice_self.feel()
         alpha_reward = (3.0 * max(0.0, alpha_esteem - self._prev_alpha_esteem)
                        + 0.25 * max(0, self.alpha_babble.bound_count - self._prev_alpha_bound)
-                       + 0.8 * max(0.0, combined - self._prev_combined_id))
+                       + 0.8 * max(0.0, combined - self._prev_combined_id)
+                       + 0.6 * self._relief)          # easing his own body is rewarding
         self._prev_alpha_esteem   = alpha_esteem
         self._prev_alpha_bound    = self.alpha_babble.bound_count
         self._prev_combined_id   = combined
@@ -6272,7 +6288,8 @@ class NeuromorphicBrain:
                 boredom=self.alpha_dmn.boredom,
                 deaf=(1.0 if _MIC_OFF else 0.0),   # ears covered → felt 'muffled'
                 mute=(1.0 if _TTS_OFF else 0.0),   # mouth covered → felt 'stifled'
-                warmth=self._warmth, squeeze=self._squeeze, choke=self._choke)  # the body
+                warmth=self._warmth, squeeze=self._squeeze, choke=self._choke,
+                relief=self._relief)               # the body (+ relief when it eases)
             self._alpha_feeling   = self.alpha_affect.snapshot()
         except Exception:
             pass
@@ -6500,6 +6517,7 @@ class NeuromorphicBrain:
             "alpha_warmth": round(self._warmth, 3),
             "alpha_squeeze":round(self._squeeze, 3),
             "alpha_choke":  round(self._choke, 3),
+            "alpha_relief": round(self._relief, 3),
         }
 
     # ── THINK ─────────────────────────────────────────────────────────────────

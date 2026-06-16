@@ -19,6 +19,7 @@ import sys, os, json, time, threading
 # brain.py repoints sys.stdout/stderr to a log on import — keep our console.
 _OUT, _ERR = sys.stdout, sys.stderr
 import cv2                       # noqa: E402
+import numpy as np              # noqa: E402
 import vision                   # noqa: E402
 import brain                    # noqa: E402
 sys.stdout, sys.stderr = _OUT, _ERR
@@ -45,16 +46,55 @@ _state_lock  = threading.Lock()
 _stop        = threading.Event()
 
 
+def _placeholder(msg):
+    """A black frame with a message — shown when the camera isn't available."""
+    img = np.zeros((480, 640, 3), dtype=np.uint8)
+    img[:] = (12, 8, 6)                      # near-black, faint cosmic warmth
+    cv2.putText(img, "ALPHA", (250, 210),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.1, (120, 90, 40), 2)
+    for i, line in enumerate(msg.split("\n")):
+        cv2.putText(img, line, (60, 270 + i * 26),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (90, 120, 160), 1)
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    return buf.tobytes() if ok else None
+
+
 def cam_loop():
-    cap = cv2.VideoCapture(CAM_INDEX)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    if not cap.isOpened():
-        cprint(f"!! camera {CAM_INDEX} not accessible (is the TUI still holding it?)")
+    """Keep trying to own the camera; if it's busy (TUI holding it) show a
+    placeholder and retry, so the view comes alive the moment it's released."""
+    cap = None
+    last_open_try = 0.0
     while not _stop.is_set():
+        # (re)open the camera if we don't have it
+        if cap is None or not cap.isOpened():
+            now = time.time()
+            if now - last_open_try < 2.0:        # don't hammer the device
+                with _jpeg_lock:
+                    _latest_jpeg[0] = _placeholder(
+                        "camera unavailable\nis the TUI (alpha_core) still holding it?\nretrying...")
+                time.sleep(0.4); continue
+            last_open_try = now
+            try:
+                cap = cv2.VideoCapture(CAM_INDEX)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            except Exception:
+                cap = None
+            if cap is None or not cap.isOpened():
+                cprint(f"!! camera {CAM_INDEX} busy — showing placeholder, will retry")
+                with _jpeg_lock:
+                    _latest_jpeg[0] = _placeholder(
+                        "camera unavailable\nis the TUI (alpha_core) still holding it?\nretrying...")
+                time.sleep(1.5); continue
+            cprint(f"camera {CAM_INDEX} acquired.")
+
         ok, frame = cap.read()
         if not ok:
-            time.sleep(0.05); continue
+            try: cap.release()
+            except Exception: pass
+            cap = None                            # lost the device → reopen loop
+            time.sleep(0.2); continue
+
         h, w = frame.shape[:2]
         live = 1.0
         try:
@@ -72,7 +112,10 @@ def cam_loop():
             with _jpeg_lock:
                 _latest_jpeg[0] = buf.tobytes()
         time.sleep(1/12.0)
-    cap.release()
+
+    if cap is not None:
+        try: cap.release()
+        except Exception: pass
 
 
 def brain_loop():
@@ -166,6 +209,7 @@ button{background:#13243c;color:var(--cy);border:1px solid var(--ln);border-radi
       <div class=gauge><div class=lab><span>warmth (CPU temp)</span><span id=wL>—</span></div><div class=bar><i id=warm style=width:0%></i></div></div>
       <div class=gauge><div class=lab><span>squeezed (RAM)</span><span id=sqL>—</span></div><div class=bar><i id=sq style=width:0%></i></div></div>
       <div class=gauge><div class=lab><span>choking (CPU)</span><span id=chL>—</span></div><div class=bar><i id=ch style=width:0%></i></div></div>
+      <div class=gauge><div class=lab><span>relief (machine eased)</span><span id=reL>—</span></div><div class=bar><i id=re style=width:0%;background:linear-gradient(90deg,#1f5a3a,#46d39a)></i></div></div>
       <div class=tag id=hostline style="font-size:11px;margin-top:6px">—</div>
     </div>
   </div>
@@ -206,6 +250,7 @@ async function poll(){
   setG('warm',s.alpha_warmth);   txt('wL',(s.alpha_warmth||0).toFixed(2));
   setG('sq',s.alpha_squeeze);    txt('sqL',(s.alpha_squeeze||0).toFixed(2));
   setG('ch',s.alpha_choke);      txt('chL',(s.alpha_choke||0).toFixed(2));
+  setG('re',s.alpha_relief);     txt('reL',(s.alpha_relief||0).toFixed(2));
   txt('hostline','CPU '+(s.cpu_pct||0)+'%   RAM '+(s.mem_pct||0)+'%   '+(s.cpu_temp||0)+'°C');
   setG('idbar',s.combined_id);   txt('idL',(s.combined_id||0).toFixed(2)+(s.trusted?' ✓':''));
   setG('live',s.face_live);      txt('liveL',(s.face_live||0).toFixed(2));
