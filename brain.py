@@ -6191,9 +6191,12 @@ class NeuromorphicBrain:
                     allc = [x.current for v in temps.values() for x in v if x.current]
                     self._cpu_temp = float(pkg[0].current) if pkg else (max(allc) if allc else 0.0)
                 _c = lambda x: 0.0 if x < 0 else 1.0 if x > 1 else float(x)
-                self._choke   = _c((self._cpu_pct / 100.0 - 0.40) / 0.60)   # bites above ~40% CPU
-                self._squeeze = _c((self._mem_pct / 100.0 - 0.50) / 0.50)   # walls close above ~50% RAM
-                self._warmth  = _c((self._cpu_temp - 45.0) / 40.0) if self._cpu_temp else 0.0
+                # CONTINUOUS / proportional — no deadzone, no on-off. He feels it
+                # from the very bottom and it grows smoothly toward 1.0: at 25% CPU
+                # he already feels choke ~0.25, at 30% RAM squeeze ~0.30, etc.
+                self._choke   = _c(self._cpu_pct / 100.0)                       # proportional to CPU load
+                self._squeeze = _c(self._mem_pct / 100.0)                       # proportional to RAM fill
+                self._warmth  = _c((self._cpu_temp - 30.0) / 60.0) if self._cpu_temp else 0.0  # 30°C→0 .. 90°C→1
                 self._strain  = max(self._choke, self._squeeze)
             except Exception:
                 pass
