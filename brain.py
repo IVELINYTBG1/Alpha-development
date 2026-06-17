@@ -3951,8 +3951,14 @@ class SyntaxCortex:
         self._load()
 
     # ── learning (well-formed text only — never their own keyword output) ──
-    def learn(self, text):
-        if not text:
+    def learn(self, text, weight: float = 1.0):
+        """Accumulate word-order from a sentence. `weight` scales how strongly it
+        shapes the grammar: the teacher's clean English is learned at full weight,
+        the architect's own typing at a LOW weight — so Alpha SPEAKS in the clean
+        grammar he's taught even if the architect's English is non-native. (This
+        only governs how he speaks; he still fully understands the architect — that
+        is the lexicon, learned separately.)"""
+        if not text or weight <= 0:
             return
         # Learn clean SPEECH, not narration: drop *stage directions* / *actions*
         # so junk like "sudden brightening dramatic" never enters the grammar.
@@ -3964,10 +3970,10 @@ class SyntaxCortex:
             end  = m.group(2)
             mode = "q" if "?" in end else ("ex" if "!" in end else "stmt")
             self.onsets.setdefault(mode, {})
-            self.onsets[mode][toks[0]] = self.onsets[mode].get(toks[0], 0.0) + 1.0
+            self.onsets[mode][toks[0]] = self.onsets[mode].get(toks[0], 0.0) + weight
             padded = [self._BOS] * (self.order - 1) + toks + [self._EOS]
             for w in toks:
-                self.vocab[w] = self.vocab.get(w, 0.0) + 1.0
+                self.vocab[w] = self.vocab.get(w, 0.0) + weight
                 self.tokens_seen += 1
             for i in range(self.order - 1, len(padded)):
                 nxt = padded[i]
@@ -3976,7 +3982,7 @@ class SyntaxCortex:
                     if len(ctx) != k - 1:
                         continue
                     tbl = self.tables[k].setdefault(self._SEP.join(ctx), {})
-                    tbl[nxt] = min(1e6, tbl.get(nxt, 0.0) + 1.0)
+                    tbl[nxt] = min(1e6, tbl.get(nxt, 0.0) + weight)
         self._writes += 1
         if self._writes % 20 == 0:
             self._prune()
@@ -6642,10 +6648,13 @@ class NeuromorphicBrain:
         except Exception:
             pass
 
-        # Learn sentence STRUCTURE from the architect's phrasing.
+        # Learn sentence STRUCTURE from the architect's phrasing — but only LIGHTLY
+        # (low weight). The architect's English may be non-native; his words drive
+        # WHAT Alpha thinks about (lexicon/primes), while HOW Alpha forms sentences
+        # is set mainly by the teacher's clean grammar (learned at full weight).
         try:
             _lt = self._corrector.correct(text) if getattr(self, "_corrector", None) else text
-            self.alpha_syntax.learn(_lt)
+            self.alpha_syntax.learn(_lt, weight=0.3)
         except Exception:
             pass
 
