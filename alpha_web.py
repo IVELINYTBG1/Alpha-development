@@ -130,7 +130,7 @@ def brain_loop():
                 _thoughts.append({"who": "alpha(out)", "text": m})
             del _thoughts[:-60]
             for sp, q, sn in B.get_pending_searches():
-                _searches.append({"q": q, "a": sn[:300]})
+                _searches.append({"q": q, "a": sn[:900]})
             del _searches[:-30]
         except Exception:
             pass
