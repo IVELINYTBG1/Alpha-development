@@ -83,7 +83,10 @@ _TEACHER_CORE = (
     "flag on its OWN FIRST LINE exactly as `[typo: wrongword -> correctword]`, then "
     "say plainly that it's a typo and shouldn't be kept. Only ever flag clear "
     "misspellings — never real or unusual-but-valid words.\n"
-    "Keep replies SHORT: 2-4 sentences after any typo line."
+    "Keep replies SHORT *and COMPLETE*: at most 2-4 sentences after any typo "
+    "line. Be brief BY CHOICE — finish your thought and end on a full sentence; "
+    "never trail off or stop mid-sentence. If space is tight, say less, but "
+    "always complete what you start."
 )
 
 _ALPHA_STYLE = (
@@ -118,8 +121,11 @@ class ClaudeTeacherBackend:
 
     QUEUE_MAX   = 8
     TIMEOUT_S   = 30.0
-    MAX_TOKENS  = 320          # short, teaching replies (not essays)
-    MAX_SNIPPET = 1200
+    MAX_TOKENS  = 1024         # generous headroom so a reply is never CUT mid-thought;
+                               # brevity is asked for in the system prompt, not forced
+                               # by the cap (a complete short reply uses far less)
+    MAX_SNIPPET = 2000         # safety net only; if ever exceeded we cut on a
+                               # sentence boundary (see _do_teach) — never mid-word
 
     def __init__(self):
         self._api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
@@ -223,7 +229,13 @@ class ClaudeTeacherBackend:
             if not text:
                 return SearchResult(query=query, snippet="(empty response)",
                                     source="fallback", ok=False)
-            return SearchResult(query=query, snippet=text[:self.MAX_SNIPPET],
+            # The cap is just a safety net now; if a reply somehow runs long, cut
+            # on the last sentence end so we never hand the brain a half-sentence.
+            if len(text) > self.MAX_SNIPPET:
+                head = text[:self.MAX_SNIPPET]
+                cut  = max(head.rfind(". "), head.rfind("! "), head.rfind("? "))
+                text = head[:cut + 1] if cut > 0 else head
+            return SearchResult(query=query, snippet=text,
                                 source="claude", ok=True)
         except Exception as e:
             return SearchResult(query=query, snippet=f"(parse error: {e})",
@@ -277,7 +289,7 @@ class ClaudeTeacherBackend:
         }
         body = {
             "model": self._model,
-            "max_tokens": 160,
+            "max_tokens": 400,         # headroom — brevity asked in prompt, not forced
             "temperature": 0.5,
             "system": _SCAFFOLD_SYSTEM,
             "messages": [{"role": "user", "content": user_content}],
@@ -333,7 +345,7 @@ class ClaudeTeacherBackend:
         )
         headers = {"x-api-key": self._api_key, "anthropic-version": ANTHROPIC_VERSION,
                    "content-type": "application/json"}
-        body = {"model": self._model, "max_tokens": 80, "temperature": 0.8,
+        body = {"model": self._model, "max_tokens": 220, "temperature": 0.8,
                 "system": system, "messages": [{"role": "user", "content": content}]}
         try:
             resp = requests.post(ANTHROPIC_URL, headers=headers, json=body, timeout=12.0)
