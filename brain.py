@@ -4661,46 +4661,15 @@ def _alpha_response(alpha: "AlphaBrain", V_phill: float, fired: list,
     if hipp_act > 0.20 and pfc_act > 0.15:
         deduction = build_deduction(fired)
 
-    # Vigilance signal from ACC inhibition — described physically, not named
-    vigilance_str = ""
-    if alpha._vigilance and acc_act > 0.25:
-        vigilance_str = f" ACC:{acc_act:.2f} inhibiting PFC."
-
-    # Trust signal
-    trust_str = f" voice:{trust:.2f}" if trust < 0.50 else ""
-    id_str    = f" identity:{combined:.2f}" if combined > 0.40 else ""
-
-    # Broca not cleared OR cleared without semantic matches — Alpha is
-    # still integrating. Surface semantic candidates if any; otherwise
-    # vary the diagnostic readout so repeats aren't byte-identical.
+    # Broca hasn't crossed into speech yet (or cleared without semantic matches).
+    # Stoic + honest: surface the bare pre-verbal concepts that ARE active, shaped
+    # by how he feels — otherwise stay quiet ("…"). NO instrument readouts in his
+    # voice: trust / identity / region activity live in the TUI gauges, not in his
+    # words. (Previously this leaked "Processing. thalamus=0.07. voice:0.18".)
     if broca_spk == 0 or (not top_words and not deduction):
-        import random
         if top_words:
-            phrasings = [
-                f"{'  '.join(top_words[:3])}.{trust_str}",
-                f"...{', '.join(top_words[:3])}.{trust_str}",
-                f"Threshold not crossed but I'm reading: {', '.join(top_words[:3])}.{trust_str}",
-                f"Pre-verbal — {', '.join(top_words[:3])}.{trust_str}",
-                f"Associations: {', '.join(top_words[:4])}.{trust_str}",
-                f"{top_words[0]}. {top_words[1] if len(top_words)>1 else ''}.{trust_str}",
-                f"Holding {top_words[0]}.{trust_str}",
-            ]
-            return random.choice(phrasings).strip()
-        active_regions = [(r,v) for r,v in sorted(act.items(), key=lambda x:-x[1]) if v > 0.10][:3]
-        region_report  = "  ".join(f"{r}={v:.2f}" for r,v in active_regions) or "integrating"
-        top_r = active_regions[0][0] if active_regions else None
-        templates = [
-            f"[{region_report}]{trust_str}",
-            f"Still integrating. {region_report}.{trust_str}",
-            f"PFC has not cleared yet — {region_report}.{trust_str}",
-            f"Holding. {region_report}.{trust_str}",
-            f"Listening. {top_r or 'no region'} leads at {(active_regions[0][1] if active_regions else 0):.2f}.{trust_str}",
-            f"Routing through {top_r or 'cortex'}, broca silent.{trust_str}",
-            f"I hear you. Threshold not crossed. {region_report}.{trust_str}",
-            f"Processing. {region_report}.{trust_str}",
-            f"Give me a moment — {region_report}.{trust_str}",
-        ]
-        return random.choice(templates)
+            return _affect_shape("  ".join(top_words[:3]), affect, is_alpha=True)
+        return "…"
 
     # Sentence sequencing (emergent grammar) + affective drive — order the
     # spike-selected words into an utterance Broca has LEARNED, with the speech
@@ -4713,7 +4682,7 @@ def _alpha_response(alpha: "AlphaBrain", V_phill: float, fired: list,
             if core:
                 voiced = _affect_shape(core, affect, is_alpha=True)
                 tail = ("  " + deduction) if deduction else ""
-                return voiced + tail + vigilance_str + trust_str + id_str
+                return voiced + tail
         except Exception:
             pass
 
@@ -4729,9 +4698,9 @@ def _alpha_response(alpha: "AlphaBrain", V_phill: float, fired: list,
     if deduction:
         parts.append(deduction)
     if not parts:
-        parts.append(f"pfc:{pfc_act:.2f}  broca:{broca_act:.2f}")
+        return "…"                       # nothing formed — stay quiet, no debug
 
-    return "  ".join(parts) + vigilance_str + trust_str + id_str
+    return "  ".join(parts)
 
 
 
