@@ -2603,7 +2603,7 @@ class StorytellingEngine:
     ROLES (never hardcoded behavior — just context injected into primes):
       Alpha      → plays as Alpha (cold, analytical, protective elder sister)
       Alpha    → plays as Alpha (chaotic, curious, impulsive cat-girl)
-      Architect → plays as NodeVortex (the architect, their father/creator)
+      Architect → plays as NodeVortex (the architect, their creator)
 
     The story is NOT a scripted play. The SNN still drives responses.
     Storytelling mode changes:
@@ -6185,7 +6185,7 @@ class NeuromorphicBrain:
         at what she can actually DO. Seeds emerge from the signal + active concepts
         — not a fixed sentence."""
         is_alpha  = (who == "alpha")
-        addr     = "father" if is_alpha else "papa"
+        addr     = "architect"           # how Alpha addresses the architect (NOT 'father')
         syntax   = self.alpha_syntax if is_alpha else self.alpha_syntax
         reasoner = self.alpha_reason if is_alpha else self.alpha_reason
         brain_o  = self.alpha if is_alpha else self.alpha
