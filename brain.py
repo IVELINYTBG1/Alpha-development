@@ -4128,6 +4128,8 @@ class SyntaxCortex:
             chosen.pop()
         while len(chosen) > 1 and chosen[0] in _FUNCTION_WORDS and chosen[0] not in wanted:
             chosen.pop(0)
+        # Collapse an immediate stutter ("trust it it aloud" -> "trust it aloud").
+        chosen = [w for i, w in enumerate(chosen) if i == 0 or w != chosen[i - 1]]
         # If nothing contentful survived (no word she actually wanted to say),
         # don't leak a fragment — stay quiet this cycle.
         if len(chosen) < 2 or not any(w in wanted for w in chosen):
@@ -6210,12 +6212,18 @@ class NeuromorphicBrain:
         if not q:
             return
         self._push_leaked_thought(who, q)                # visible wondering
-        # She tries to answer her own question (shallow association over lexicon).
+        # Sometimes he tries to answer his own question (shallow association over
+        # the lexicon). Only SOMETIMES — voicing a tentative "...maybe X" after
+        # every single question made the pane a monotonous "...maybe" every other
+        # line. Gated + the conclusion is habituated so the guess rotates.
         try:
-            grounded = [s for s in seeds if s in self.sem.entries]
-            _, concl = reasoner.deliberate(grounded, self.sem, self._reason_links, suppress=self._concept_hab.suppression)
-            if concl and concl not in seeds:
-                self._push_leaked_thought(who, f"...maybe {concl}")
+            import random as _rnd
+            if _rnd.random() < 0.4:
+                grounded = [s for s in seeds if s in self.sem.entries]
+                _, concl = reasoner.deliberate(grounded, self.sem, self._reason_links, suppress=self._concept_hab.suppression)
+                if concl and concl not in seeds:
+                    self._concept_hab.surface(concl)
+                    self._push_leaked_thought(who, f"...maybe {concl}")
         except Exception:
             pass
         # Worried about HIM and he's here — Alpha holds it as an inner thought
