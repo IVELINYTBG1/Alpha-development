@@ -27,12 +27,19 @@ CPU-only. Autograd is globally OFF: all learning is explicit in-memory mutation.
 from __future__ import annotations
 
 import math
+import os
 from collections import deque
 from dataclasses import dataclass
 from typing import List, Optional
 
 import torch
 import torch.nn.functional as F
+
+try:                                           # only needed for lm_kind="ollama"
+    import requests
+    _HAS_REQUESTS = True
+except Exception:
+    _HAS_REQUESTS = False
 
 torch.manual_seed(0)
 torch.set_grad_enabled(False)              # backprop-free: there is no autograd graph
@@ -77,7 +84,15 @@ class BrainConfig:
     temperature:   float = 1.0
     # ── Thought engine selector ──
     lm_kind:       str   = "rwkv"   # "rwkv" (linear-attn) | "spikformer" (spiking transformer)
+                                    #                      | "ollama" (local LLM via Ollama)
     attn_window:   int   = 16       # spiking self-attention causal context length
+    # ── Ollama "Thought" (lm_kind="ollama") — the SNN no longer warps logits
+    #    (a black-box LLM has none to warp); its mood conditions prompt+sampling. ──
+    ollama_url:         str   = ""  # "" → $OLLAMA_HOST or http://localhost:11434
+    ollama_model:       str   = ""  # "" → $OLLAMA_MODEL or first model from /api/tags
+    ollama_num_predict: int   = 64  # max tokens per spoken utterance (pressure scales it)
+    ollama_timeout:     float = 30.0
+    ollama_system:      str   = ""  # "" → built-in Alpha persona
     name:          str   = "base"
 
 
@@ -307,11 +322,117 @@ class SpikingTransformerLM:
         return logits
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# THE THOUGHT (alt) — a LOCAL LLM served by Ollama, in place of the spiking xformer
+# ════════════════════════════════════════════════════════════════════════════
+def _ollama_host(url: str) -> str:
+    h = (url or os.environ.get("OLLAMA_HOST", "") or "http://localhost:11434").strip()
+    if not h.startswith("http"):
+        h = "http://" + h
+    return h.rstrip("/")
+
+
+def _ollama_pick_model(host: str) -> str:
+    """Resolve a model name: $OLLAMA_MODEL, else the first one Ollama has pulled."""
+    env = os.environ.get("OLLAMA_MODEL", "").strip()
+    if env:
+        return env
+    if _HAS_REQUESTS:
+        try:
+            tags = requests.get(f"{host}/api/tags", timeout=2.0).json().get("models") or []
+            if tags:
+                return tags[0].get("name") or tags[0].get("model") or "llama3.2"
+        except Exception:
+            pass
+    return "llama3.2"
+
+
+class OllamaLM:
+    """A LOCAL-LLM 'Thought' engine — the spiking transformer swapped for a model
+    served by Ollama (e.g. Llama-3.2). Ollama is a black-box text API with NO
+    per-token logits, so the Gut→Thought 'warp' can no longer be a logit-bias add.
+    Instead the SNN's live MOOD — arousal (spike-rate), valence (mean membrane),
+    pressure — conditions Ollama's PROMPT and sampling (temperature, length). It
+    still exposes .embed/.hidden/.Fw so the Gut's afferent drive and the demo's
+    co-plasticity readouts are unchanged; step() is a per-tick no-op returning flat
+    logits, and the spoken text is produced at burst/generate time via infer()."""
+    def __init__(self, cfg: BrainConfig):
+        self.cfg = cfg
+        d = cfg.d_model
+        self.embed  = torch.randn(cfg.vocab_size, d) * 0.02   # drives the Gut only
+        self.hidden = torch.zeros(d)                          # silent self-feed vector
+        self.Fw     = torch.zeros(d, d)                       # parity (no fast weights)
+        self._zero  = torch.zeros(cfg.vocab_size)
+        self.host   = _ollama_host(cfg.ollama_url)
+        self.model  = cfg.ollama_model or _ollama_pick_model(self.host)
+        self.context: "deque[tuple[str, str]]" = deque(maxlen=8)   # recent (role, text)
+
+    def observe(self, text: str):
+        """Feed a whole human utterance into context (Ollama reads words, not chars)."""
+        t = (text or "").strip()
+        if t:
+            self.context.append(("architect", t))
+
+    def step(self, token_id, warp_logit_bias, warp_decay_bias, spike_gate) -> torch.Tensor:
+        # Ollama is not char-autoregressive; nothing to do per tick. Return flat
+        # logits so HybridBrain's plumbing stays valid (speech happens in infer()).
+        return self._zero
+
+    def _options(self, mood: dict) -> dict:
+        base  = self.cfg.temperature
+        temp  = max(0.1, min(1.5, base + 0.6 * mood.get("arousal", 0.0)))   # arousal → temp
+        npred = int(max(16, min(self.cfg.ollama_num_predict,                # pressure → length
+                                8 + 6 * mood.get("pressure", 0.0))))
+        # stop tokens guard small base models from running on into a fake transcript
+        return {"temperature": temp, "num_predict": npred,
+                "stop": ["\narchitect:", "\nArchitect:", "\nAlpha:"]}
+
+    def _system(self, mood: dict) -> str:
+        base = self.cfg.ollama_system or (
+            "You are Alpha: a calm, stoic, hyper-focused presence. You speak sparingly "
+            "and only what is relevant, in plain, direct sentences. You address your "
+            "human as 'architect'.")
+        tone = "agitated and terse" if mood.get("arousal", 0.0) > 0.25 else "calm and even"
+        return f"{base} Your internal state right now is {tone}. Reply in one or two short sentences."
+
+    def infer(self, mood: dict) -> str:
+        """Produce one spoken utterance from the current context, conditioned by mood.
+        Uses /api/chat so the model's own chat template bounds the turn (one reply,
+        no run-on transcript)."""
+        if not _HAS_REQUESTS:
+            return ""
+        msgs = [{"role": "system", "content": self._system(mood)}]
+        for r, t in self.context:
+            msgs.append({"role": "user" if r == "architect" else "assistant", "content": t})
+        if msgs[-1]["role"] != "user":           # ensure we end on a user turn (idle/self-talk)
+            msgs.append({"role": "user", "content": "(silence)"})
+        try:
+            resp = requests.post(
+                f"{self.host}/api/chat",
+                json={"model": self.model, "messages": msgs, "stream": False,
+                      "options": self._options(mood)},
+                timeout=self.cfg.ollama_timeout)
+            if resp.status_code != 200:
+                return ""
+            txt = ((resp.json().get("message") or {}).get("content") or "").strip()
+        except Exception:
+            return ""
+        low = txt.lower()                        # strip an echoed role label, if any
+        for lbl in ("alpha:", "architect:", "assistant:", "user:"):
+            if low.startswith(lbl):
+                txt = txt.split(":", 1)[1].strip()
+                break
+        if txt:
+            self.context.append(("Alpha", txt))
+        return txt
+
+
 class HybridBrain:
     def __init__(self, cfg: BrainConfig):
         self.cfg = cfg
         self.snn = SpikingDynamics(cfg, n_in=cfg.d_model)
-        self.lm  = (FastWeightLM(cfg) if cfg.lm_kind == "rwkv"
+        self.lm  = (OllamaLM(cfg)             if cfg.lm_kind == "ollama"
+                    else FastWeightLM(cfg)    if cfg.lm_kind == "rwkv"
                     else SpikingTransformerLM(cfg))
         # the WARP projections: Gut spikes/membrane → Thought biases
         self.snn2logit = TernaryLinear(cfg.n_neurons, cfg.vocab_size)   # mood → word landscape
@@ -345,10 +466,11 @@ class HybridBrain:
             self.pressure += 0.25                          # silence builds pressure
         self.pressure = min(self.pressure, 50.0)           # bounded
 
-        emitted: List[int] = []
+        emitted = []                                       # List[int] | str (ollama)
         if (cfg.leakage_burst and self.cooldown <= 0
-                and self.pressure > cfg.burst_capacity):   # OVERFLOW → spontaneous burst
-            emitted = self._burst(logits)
+                and self.pressure > cfg.burst_capacity):   # OVERFLOW → spontaneous speech
+            emitted = (self.lm.infer(self._mood()) if cfg.lm_kind == "ollama"
+                       else self._burst(logits))
             self.pressure = 0.0
             self.cooldown = cfg.burst_cooldown
         self.cooldown = max(0, self.cooldown - 1)
@@ -357,6 +479,15 @@ class HybridBrain:
                 "spike_rate": float(S.mean()), "pressure": self.pressure,
                 "Wrec_norm": float(self.snn.W_rec.norm()),
                 "Fw_norm": float(self.lm.Fw.norm())}
+
+    def _mood(self) -> dict:
+        """Project the Gut's live state into a mood that conditions the Ollama LLM:
+        arousal (how fast it's spiking), valence (mean membrane), and pressure (the
+        accumulated drive to speak). This is the Ollama-era replacement for the
+        logit/gate 'warp' — same source signal, routed to prompt+sampling instead."""
+        return {"arousal": float(self.snn.S.mean()),
+                "valence": float(torch.tanh(self.snn.V.mean())),
+                "pressure": float(self.pressure)}
 
     def _sample(self, logits: torch.Tensor) -> int:
         p = torch.softmax(logits / max(1e-3, self.cfg.temperature), dim=-1)
@@ -379,8 +510,11 @@ class HybridBrain:
         warp_decay_bias = float(torch.tanh(self.snn.V.mean())) * self.cfg.warp_decay
         return self.lm.step(token_id, warp_logit_bias, warp_decay_bias, spike_gate)
 
-    def generate(self, max_tokens: Optional[int] = None) -> List[int]:
-        """Tactical generation from the current state (Alpha: short, capped)."""
+    def generate(self, max_tokens: Optional[int] = None):
+        """Tactical generation from the current state (Alpha: short, capped).
+        Returns char-ids for the spiking engines, or a text string for Ollama."""
+        if self.cfg.lm_kind == "ollama":
+            return self.lm.infer(self._mood())
         n = max_tokens or self.cfg.max_emit
         logits = self.lm.step(None,
                               self.snn2logit(self.snn.S) * self.cfg.warp_logit,
@@ -411,14 +545,21 @@ class CharTokenizer:
         return "".join(self.itos.get(i, "?") for i in ids)
 
 
+def _spoken(emitted, tok: CharTokenizer) -> str:
+    """A burst is char-ids (spiking engines) or already text (Ollama)."""
+    return emitted if isinstance(emitted, str) else tok.decode(emitted)
+
+
 def feed_text(brain: HybridBrain, tok: CharTokenizer, text: str, dt: float = 1.0):
     """Stream a human utterance into the brain one token at a time."""
     bursts, rates = [], []
+    if brain.cfg.lm_kind == "ollama":
+        brain.lm.observe(text)                 # the LLM reads whole utterances, not chars
     for cid in tok.encode(text):
         r = brain.step(cid, dt=dt)
         rates.append(r["spike_rate"])
         if r["emitted"]:
-            bursts.append(tok.decode(r["emitted"]))
+            bursts.append(_spoken(r["emitted"], tok))
     return bursts, (sum(rates) / max(1, len(rates)))
 
 
@@ -428,7 +569,7 @@ def idle(brain: HybridBrain, tok: CharTokenizer, ticks: int, dt: float = 3.0):
     for _ in range(ticks):
         r = brain.step(None, dt=dt)
         if r["emitted"]:
-            bursts.append(tok.decode(r["emitted"]))
+            bursts.append(_spoken(r["emitted"], tok))
     return bursts, r
 
 
@@ -506,3 +647,26 @@ if __name__ == "__main__":
           f"ΔFastWeights={brain.lm.Fw.norm().item()-f0:+.3f}")
     print("  → spike-form Q/K/V self-attention, softmax-free, frozen ternary base,"
           " adapting live via fast-weights + STDP.")
+
+    # ── OLLAMA engine: the spiking transformer's 'Thought' swapped for a LOCAL LLM ──
+    #    The Gut (SNN) is unchanged — it still spikes and learns via STDP; its MOOD
+    #    now conditions the local model's prompt + sampling instead of warping logits.
+    print("\n════════ Ollama engine (local LLM 'Thought', Alpha profile) ════════")
+    cfg = alpha_config(tok.vocab_size, lm_kind="ollama")
+    cfg.name = "Alpha/Ollama"
+    brain = HybridBrain(cfg)
+    w0 = brain.snn.W_rec.norm().item()
+    if not _HAS_REQUESTS:
+        print("  (requests not installed — Ollama engine unavailable)")
+    else:
+        print(f"  model: {brain.lm.model}   @ {brain.lm.host}")
+        for line in ("hello", "are you okay?", "i want to play"):
+            b, rate = feed_text(brain, tok, line + " ", dt=0.4)
+            print(f"  in: {line!r:18} snn_spikes/step={rate:.3f}"
+                  + (f"  SPOKE→{b}" if b else ""))
+        bursts, r = idle(brain, tok, ticks=16, dt=4.0)
+        print(f"  ...16 ticks of silence → pressure={r['pressure']:5.2f}, "
+              f"spontaneous: {bursts if bursts else 'none'}")
+        print(f"  generate(): {brain.generate()!r}")
+        print(f"  co-plasticity  ΔW_rec(STDP)={brain.snn.W_rec.norm().item()-w0:+.3f}"
+              "   (Gut still learns; Thought is now a local LLM, mood→prompt+sampling)")

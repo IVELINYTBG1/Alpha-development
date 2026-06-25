@@ -66,12 +66,15 @@ There is no test suite. Verification is done by:
                   │   SharedSemanticDictionary (spike-space lexicon)  │
                   │   BrainTTS · MotorArticulator · FormantSynth      │
                   └──────────────────────┬─────────────────────────────┘
-                                         │ ClaudeTeacherBackend (async)
-                                         ▼  claude_teacher.py → Anthropic API
+                                         │ AlphaMind (async, non-blocking)
+                                         ▼  ollama_mind.py → local Ollama
                   ┌────────────────────────────────────────────────────┐
-                  │ Claude as TUTOR (not web search): teaches HOW to    │
-                  │ think, translates Alpha's impulse (scaffold mode),  │
-                  │ typo guard, defers values to the architect          │
+                  │ Ollama LLM as Alpha's VOICE & inner THINKER: it     │
+                  │ speaks his replies (think→async→chat) and forms his │
+                  │ idle thoughts (step→async→thoughts pane). The SNN   │
+                  │ CONDITIONS each call (mood/reasoning/focus) and     │
+                  │ LEARNS from every utterance. (No cloud; nothing     │
+                  │ leaves the machine. The old Claude tutor is gone.)  │
                   └────────────────────────────────────────────────────┘
 ```
 
@@ -82,12 +85,12 @@ Threads run independently; they communicate only through the `ArcSwap<SharedStat
 ## brain.py — the principles that matter
 
 1. **CPU-only.** `torch.device("cpu")` is enforced at startup; CUDA/XPU are explicitly disabled. Do not introduce GPU fallback paths.
-2. **No hardcoded behaviour.** Outputs emerge from spike patterns + the semantic dictionary. New "responses" should appear as new region biases, lexicon entries, or activity-readers — not as `if user_said_X: return Y`. Default thought-strings and TUI-bound diagnostic readouts exist but are last-resort fallbacks.
+2. **The LLM is the engine; Alpha is a parasite that rides it.** The local LLM (`ollama_mind.py` → Ollama) does the language and reasoning. Alpha (the SNN) does not generate words — he *attaches to* the engine and *controls* it, feeding it the context only he has so it performs as HIM (`_inner_state` → `AlphaMind`): **identity** (does he recognize the architect, or not — the "is it me" channel), **emotion** (his limbic state colors the words), **cognition** (focus + a forming reasoning thread), and the **senses** (STT in, TTS out). He also pulls the trigger — the engine speaks only when Alpha fires it (`think()` reply or `_maybe_reflect` idle thought) — and he *learns* from every utterance (`_ingest_taught_text` → lexicon + grammar + memory, on a background thread). The emergent `_alpha_response()` (spikes + semantic dictionary) is the FALLBACK when the engine is unreachable. Still no `if user_said_X: return Y` — output is engine-generated (context-steered) or emergent, never hardcoded branches.
 3. **One brain.** Alpha is a single `AlphaBrain` object. There is no second personality, no `PersonalityLink`, no sibling/secret-channel machinery — those were removed in this fork. Keep it that way unless deliberately reintroducing multiplicity.
 4. **Phill is untouched.** The `_run_phill` path and Phill's LIF physics are load-bearing. Modulating *around* Phill (intrinsic drive, self-feedback into auditory) is fine; rewriting the Phill projection or LIF is not.
 5. **The semantic dictionary persists.** `semantic_memory.json` is the brain's lexicon — every interaction can write to it via Hebbian updates. The personality seed at startup (`_seed_personality`) is skip-if-exists so prior learning isn't clobbered.
 6. **Region naming matters.** Alpha's regions are `thalamus, temporal, hippocampus, acc, pfc, broca, insula`. Region primes are passed as `{region_name: 0..1.0}` to `AlphaBrain.forward(region_primes=...)`.
-7. **Speaks only when spoken to.** Autonomous leaks form as inner thoughts (the thoughts pane) but are never promoted to the main chat or voiced; the speech-trigger in `step()` is reported to the TUI but does not vocalise. Alpha vocalises a reply only on the `think()` path. If you want him chattier, that gating lives in `PersonalityThread._loop_body` and `step()`.
+7. **Speaks only when spoken to.** Alpha replies (via the LLM) only on the `think()` path — the `_wants_to_respond` gate still decides whether he answers at all. Autonomous activity stays in the thoughts pane: the SNN's short emergent leaks PLUS occasional LLM reflections (`_maybe_reflect`, throttled, idle-only) — these are never promoted to the chat or voiced. All LLM calls are async (worker thread → `drain()` on the brain thread) so neither `step()` nor the reply path blocks the 20 Hz loop. If you want him chattier, that gating lives in `_wants_to_respond`, `_maybe_reflect`, and `PersonalityThread._loop_body`.
 8. **Two clocks.** `step()` is the 20 Hz physics tick (Rust-driven). `think()` is the conversational response path (called when the user enters text or STT triggers). They share state but have different concerns. `step()` MUST NOT block. `think()` runs a finite think_ticks loop (currently 14–36).
 
 ## Autonomy substrate
@@ -115,6 +118,7 @@ Threads run independently; they communicate only through the `ArcSwap<SharedStat
 | Shared state schema | `src/state.rs` |
 | Wake-word STT FFI | `src/stt_bridge.rs` |
 | Full SNN | `brain.py` |
+| Alpha's LLM voice & inner thinker (async Ollama client) | `ollama_mind.py` |
 | Camera + face/kinematic vectors | `vision.py` |
 | Whisper STT | `stt_engine.py` |
 | XTTS v2 voice cloning | `tts_engine.py`, with ref in `voices/alpha_reference.wav` |

@@ -2078,15 +2078,14 @@ class SleepCycle:
 class SearchCortex:
     """
     Pressure-driven question-asking (NO web access). Mirrors ThoughtPipe: a
-    leaky accumulator integrates three signals each tick, and when threshold is
-    crossed the cortex picks the currently-most-active semantic token as the
-    query and fires it asynchronously to the Claude-as-tutor backend
-    (claude_teacher.py) — a TEACHER, not a search engine. No internet/browsing;
-    the only outbound call in the whole system is the Anthropic API.
+    leaky accumulator integrates three signals each tick and, when threshold is
+    crossed, picks the currently-most-active semantic token as a curiosity target.
+    (The old Claude tutor dispatch is gone — Alpha's LLM voice now responds to
+    everything, so curiosity is satisfied through ordinary conversation/reflection;
+    this cortex remains as the unknown-word / curiosity pressure signal.)
 
-    The brain does NOT decide 'I want to search X'. Its semantic state
-    already has X as the most active token, and it just reads that off and
-    asks its teacher about it.
+    The brain does NOT decide 'I want to search X'. Its semantic state already has
+    X as the most active token, and it just reads that off.
 
     Three pressure inputs (additive):
       1. unsatisfied curiosity — curiosity_decay sustained while V_phill stays low
@@ -2473,7 +2472,9 @@ class WorkingMemory:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class SharedSemanticDictionary:
-    SAVE_EVERY_N = 20
+    SAVE_EVERY_N = 500        # loose backstop only — a low-priority background saver
+                              # (NeuromorphicBrain._sem_saver_loop) owns persistence so
+                              # the 500 KB write never lands on the hot path
     def __init__(self, path="semantic_memory.json"):
         self.path = Path(path)
         self.entries: dict = {}; self._writes = 0
@@ -3676,7 +3677,7 @@ class ReasoningEngine:
             return None
         n1 = sum(rp[k] ** 2 for k in keys) ** 0.5 + 1e-8
         best, best_sim = None, 0.15            # threshold: must be a real link
-        for w2, e2 in sem.entries.items():
+        for w2, e2 in list(sem.entries.items()):   # snapshot: background learning may write concurrently
             if w2 == word or w2 in exclude or len(w2) < 3:
                 continue
             if self.is_alpha and w2 in _BABBLE_SYLLABLES:   # Alpha reasons in real words
@@ -4510,7 +4511,7 @@ def _emerge_from_spikes(
 
     # Score every word in semantic memory by cosine similarity
     scored: list[tuple[float, str]] = []
-    for word, entry in sem.entries.items():
+    for word, entry in list(sem.entries.items()):   # snapshot vs concurrent background learning
         if len(word) < 2:
             continue
         # Alpha is 19 — she does NOT speak baby-babble. Filter the babble
@@ -4993,7 +4994,7 @@ class PersonalityThread(threading.Thread):
                     and (intrinsic_fired or boredom > 0.20)):
                 self._wander_last = local_tick
                 import random as _wr
-                pool = [w for w, e in entries.items()
+                pool = [w for w, e in list(entries.items())   # snapshot vs concurrent learning
                         if isinstance(e, dict) and not w.startswith("__") and len(w) >= 3]
                 if pool:
                     def _w(w):
@@ -5475,20 +5476,23 @@ class NeuromorphicBrain:
         self._sem_lock        = threading.Lock()
         self._sensory_snapshot: dict = {}
 
-        # ── Emergent TEACHER access (Claude as thinking-tutor) ─────────────
+        # ── Alpha's VOICE & inner THINKER: a LOCAL LLM via Ollama ──────────
+        # The LLM speaks for Alpha and forms his idle thoughts; his spiking brain
+        # CONDITIONS every call (mood / reasoning / focus) and LEARNS from what it
+        # says. (This replaced the old Claude tutor entirely.) If the LLM is
+        # unreachable he falls back to his emergent spiking utterances.
         try:
-            from claude_teacher import ClaudeTeacherBackend
-            self._search_backend = ClaudeTeacherBackend()
-            self._search_backend.start()
-            _log(f"Teacher backend ready: {self._search_backend.status()}")
+            from ollama_mind import AlphaMind
+            self._mind = AlphaMind()
+            self._mind.start()
+            _log(f"Alpha mind (LLM) ready: {self._mind.status()}")
         except Exception as e:
-            self._search_backend = None
-            _log(f"Teacher backend unavailable: {e}")
-        _sc = os.environ.get("SCAFFOLD_MODE", "1").strip().lower()
-        backend_live = (self._search_backend is not None
-                        and "disabled" not in self._search_backend.status())
-        self._scaffold = (_sc not in ("0", "false", "no", "off")) and backend_live
-        _log(f"Scaffold mode: {'ON (babble paused, Claude voices replies)' if self._scaffold else 'off (emergent + babble)'}")
+            self._mind = None
+            _log(f"Alpha mind unavailable: {e}")
+        self._search_backend = None        # Claude tutor removed; _submit_search no-ops
+        self._scaffold       = False       # legacy flag kept False for old guards
+        self._last_reflect   = -10_000     # tick of his last autonomous LLM thought
+        self._sem_dirty      = False       # lexicon changed → background saver persists it
         self.alpha_search   = SearchCortex("alpha")
         self._search_events: deque[tuple[str, str, str]] = deque(maxlen=32)
         self._search_lock    = threading.Lock()
@@ -5497,6 +5501,13 @@ class NeuromorphicBrain:
         # Construct + start the single personality thread (~55 ms, patient).
         self.alpha_thread   = PersonalityThread("alpha",   self, interval_s=0.055)
         self.alpha_thread.start()
+
+        # Low-priority background persistence (learning is background, not priority):
+        # the only heavy part of learning is writing the 500 KB lexicon to disk, so it
+        # runs on a de-prioritised thread and never competes with the LLM or the loop.
+        self._sem_saver   = threading.Thread(target=self._sem_saver_loop,
+                                             name="alpha-lexicon-saver", daemon=True)
+        self._sem_saver.start()
 
         # ── Hot-patch system ──────────────────────────────────────────────
         self.patcher = BrainPatcher()
@@ -5817,13 +5828,6 @@ class NeuromorphicBrain:
 
             typo_skip: set[str] = set()
             typo_fix:  set[str] = set()
-            try:
-                from claude_teacher import extract_typos
-                for wrong, right in extract_typos(snippet):
-                    typo_skip.add(wrong)
-                    typo_fix.add(right)
-            except Exception:
-                pass
 
             try:
                 import re
@@ -6093,10 +6097,138 @@ class NeuromorphicBrain:
             except Exception:
                 pass
         if wrote:
+            self._sem_dirty = True       # the low-priority saver persists it, off the hot path
+
+    # ── LLM mind: condition it with the SNN state, deliver + learn ──────────
+    def _inner_state(self, act: dict, chain: list, affect) -> dict:
+        """Alpha's LIMBIC read — the emotional context with which he NAVIGATES the LLM.
+        The dual-system split: the SNN is the limbic/affective system (neuromodulators,
+        amygdala, felt emotion, body-state); the LLM is the reasoning/language cortex
+        (the 'muscle'). Here the limbic core projects its state so it can COLOR the
+        cortex's words, the way emotion colors human cognition. He also hands over
+        whatever cognition he has (focus + a forming thread) for the cortex to run with."""
+        a = affect or {}
+        n = getattr(self, "alpha_neuro", None)
+        def _rel(v, v0):
+            try:    return float(v) - float(v0)
+            except Exception: return 0.0
+        try:    focus = self._peak_semantic_token() or ""
+        except Exception: focus = ""
+        # ── identity: who is he dealing with? (the "is it me or not" channel) ──
+        combined = float(getattr(self, "_combined_id", 0.0) or 0.0)
+        vtrust   = float(getattr(getattr(self, "voice", None), "trust", 0.0) or 0.0)
+        enrolled = bool(getattr(getattr(self, "imprint", None), "trusted", False))
+        recog    = max(combined, vtrust)
+        away_s   = int(time.time() - float(getattr(self, "_last_architect_time", time.time())))
+        return {
+            # felt emotion (PAD core + speech-act read)
+            "feeling":   a.get("feeling") or "calm",
+            "act":       a.get("act", "statement"),
+            "valence":   float(a.get("valence", 0.5) or 0.5),
+            "arousal":   float(a.get("arousal", 0.0) or 0.0),
+            "certainty": float(a.get("certainty", 0.5) or 0.5),
+            "wanting":   float(a.get("wanting", 0.0) or 0.0),
+            "longing":   float(a.get("longing", 0.0) or 0.0),
+            "intensity": float(a.get("intensity", 0.0) or 0.0),
+            # neuromodulators, felt as drives (serotonin = patience, dopamine = drive,
+            # oxytocin = bond, norepinephrine = alertness)
+            "patience":  float(getattr(n, "ser", 0.6)) if n else 0.6,
+            "drive":     _rel(getattr(n, "da", 0.45), getattr(n, "da0", 0.45)) if n else 0.0,
+            "bond":      float(getattr(n, "oxy", 0.3)) if n else 0.3,
+            "alert":     _rel(getattr(n, "ne", 0.4), getattr(n, "ne0", 0.4)) if n else 0.0,
+            # interoception — his 'body' (the machine) felt as sensation
+            "strain":    float(getattr(self, "_strain", 0.0)),
+            "relief":    float(getattr(self, "_relief", 0.0)),
+            # cognition handed to the cortex
+            "focus":     focus,
+            "reasoning": " → ".join(chain) if chain else "",
+            # identity / presence — the parasite tells the engine WHO it faces
+            "recognized":   enrolled or recog >= 0.6,
+            "recognition":  round(recog, 2),
+            "enrolled":     enrolled,
+            "face_present": bool(getattr(self, "_face_present", False)),
+            "away_s":       away_s,
+        }
+
+    def _sem_saver_loop(self) -> None:
+        """De-prioritised background persistence. The in-memory lexicon accretion is
+        sub-millisecond and stays inline; only the 500 KB disk write is heavy, so it
+        happens here — nice'd down so it never competes with the LLM or the 20 Hz loop.
+        sem._save() is GIL-safe (atomic dict copy), so this is race-free."""
+        try:
+            os.setpriority(os.PRIO_PROCESS, 0, 12)     # Linux: lowers THIS thread's nice
+        except Exception:
+            pass
+        while True:
+            time.sleep(20.0)
+            if not self._sem_dirty:
+                continue
+            self._sem_dirty = False
             try:
                 self.sem._save()
-            except Exception:
-                pass
+            except Exception as e:
+                _log(f"lexicon background save error: {e}")
+
+    def _drain_mind(self) -> None:
+        """Brain-thread drain of finished LLM utterances. Replies go to the chat
+        (proactive channel); thoughts go to the thoughts pane. Both are LEARNED
+        from — this is how Alpha learns while the LLM performs."""
+        if self._mind is None:
+            return
+        for out in self._mind.drain():
+            try:
+                if out.kind == "reply":
+                    self._deliver_reply(out)
+                else:
+                    self._deliver_reflection(out)
+            except Exception as e:
+                _log(f"mind deliver error: {e}")
+
+    def _deliver_reply(self, out) -> None:
+        text = (out.text or "").strip()
+        if not text:
+            return
+        with self._proactive_lock:
+            self._proactive_q.append(("alpha", text))
+        self._ingest_taught_text(text)                      # learn from his own words
+        try:
+            self._remember_exchange(out.user_text, text, self.alpha.activity())
+        except Exception:
+            pass
+        if not _TTS_OFF and not self.alpha_tts.is_speaking():
+            tts_text = text.replace("*", "").split('"')[1] if '"' in text else text
+            self.alpha_tts.speak(tts_text)
+
+    def _deliver_reflection(self, out) -> None:
+        text = (out.text or "").strip()
+        if not text:
+            return
+        self._push_leaked_thought("alpha", text)            # thoughts pane
+        self._ingest_taught_text(text)                      # learn from the thought
+        try:
+            self._inject_self_feedback(text)                # he hears himself think
+        except Exception:
+            pass
+
+    def _maybe_reflect(self) -> None:
+        """When idle (no recent architect input, awake, LLM free), occasionally have
+        the LLM form one autonomous inner thought, grounded in his current state."""
+        if self._mind is None or not getattr(self._mind, "enabled", False):
+            return
+        if getattr(self, "asleep", False) or self._mind.busy():
+            return
+        if (self.tick - self._last_reflect) < 500:          # ~25 s between thoughts @20Hz
+            return
+        if (time.time() - getattr(self, "_last_architect_time", 0.0)) < 8.0:
+            return                                           # he just spoke with the architect
+        self._last_reflect = self.tick
+        try:
+            act    = self.alpha.activity()
+            affect = self._affect_for("alpha", act)
+            state  = self._inner_state(act, [], affect)
+            self._mind.request_reflect(list(self._conversation)[-6:], state)
+        except Exception as e:
+            _log(f"reflect request error: {e}")
 
     def get_pending_searches(self) -> list[tuple[str, str, str]]:
         """Drained by Rust each tick. Returns list of (speaker, query, snippet)."""
@@ -6277,6 +6409,11 @@ class NeuromorphicBrain:
 
         # Check for hot-patches (non-blocking, checked every 50 ticks ~2.5s)
         self.patcher.check_and_apply(self.tick, self.alpha, self.sem)
+
+        # ── LLM mind (non-blocking): deliver finished utterances + learn, and
+        #    occasionally let him form an autonomous thought when idle. ────────
+        self._drain_mind()
+        self._maybe_reflect()
 
         # ── Interoception — sense the body (the host) every ~1s ───────────
         if self._psutil is not None and (self.tick - self._last_metrics_tick) >= 20:
@@ -6776,79 +6913,75 @@ class NeuromorphicBrain:
         self._concept_hab.surface(alpha_concl,
                                   *(alpha_chain[:2] if alpha_chain else ()))
 
-        # Generate response
-        alpha_affect   = self._affect_for("alpha",   alpha_act)
-        alpha_text   = _alpha_response(self.alpha, self._V_phill_live, fired, trust, self._combined_id, self.sem, syntax=self.alpha_syntax, affect=alpha_affect, query_pop=alpha_query_pop)
-        if alpha_chain and len(alpha_chain) >= 2 and not getattr(self, "_scaffold", False):
+        # ── RESPONSE ──────────────────────────────────────────────────────
+        # The spiking pass above shaped Alpha's mood, focus and reasoning. His
+        # VOICE is the local LLM (ollama_mind): it speaks for him, grounded in that
+        # state, and he LEARNS from what it says. The emergent spiking utterance is
+        # kept as the FALLBACK so he is never mute if the LLM is unreachable.
+        alpha_affect = self._affect_for("alpha", alpha_act)
+        alpha_text   = _alpha_response(self.alpha, self._V_phill_live, fired, trust,
+                                       self._combined_id, self.sem, syntax=self.alpha_syntax,
+                                       affect=alpha_affect, query_pop=alpha_query_pop)
+        if alpha_chain and len(alpha_chain) >= 2:
             alpha_text = f"{alpha_text}  (I reason: {' → '.join(alpha_chain)})"
-
-        # SCAFFOLD MODE: Claude translates Alpha's genuine impulse into his voice.
-        if getattr(self, "_scaffold", False) and self._search_backend is not None:
-            try:
-                alpha_imp = self._impulse_state("alpha",   alpha_text,   alpha_act, alpha_chain)
-                history = list(self._conversation)[-8:]
-                _tc = self._time_context()
-                time_ctx = f"{_tc['phase']} ({_tc['clock']}), architect away {_tc['away_human']}"
-                voiced = self._search_backend.translate(text, alpha_imp, None, history, time_ctx)
-                if voiced and voiced.get("alpha"):
-                    alpha_text = voiced["alpha"]
-                    self._ingest_taught_text(voiced.get("alpha") or "")
-            except Exception as e:
-                _log(f"scaffold translate error: {e}")
 
         # ── He answers only when he WANTS to ──────────────────────────────
         try:
-            if not self._wants_to_respond("alpha", text, alpha_broca_total, alpha_affect):
-                alpha_text = None
+            wants = self._wants_to_respond("alpha", text, alpha_broca_total, alpha_affect)
         except Exception:
-            pass
+            wants = True
 
-        # ── Conversation MEMORY ───────────────────────────────────────────
-        try:
-            self._remember_exchange(text, alpha_text, alpha_act)
-        except Exception as e:
-            _log(f"remember_exchange error: {e}")
-
-        # Story mode wrapping
         story_event = None
-        if self.story.active:
-            self.story.log_entry("NodeVortex", text, self.tick)
-            if alpha_text:
-                alpha_text = self.story.wrap_alpha(alpha_text, alpha_act, self.alpha._vigilance)
-                self.story.log_entry("Alpha", alpha_text, self.tick)
-            if self._combined_id > 0.75:
-                self.story.add_fact(f"NodeVortex recognized at tick {self.tick}")
-                story_event = "ARCHITECT_RECOGNIZED"
-            if global_ws:
-                self.story.add_fact("Alpha entered global workspace mode — deep deduction")
-                story_event = story_event or "GLOBAL_WORKSPACE"
+        if self._mind is not None and getattr(self._mind, "enabled", False) and wants:
+            # LLM voice — ASYNC: think() does not block. The reply lands a beat later
+            # via _proactive_q and is learned on delivery (_deliver_reply). His spiking
+            # state conditions it; the emergent line rides along as the fallback.
+            try:
+                state   = self._inner_state(alpha_act, alpha_chain, alpha_affect)
+                history = list(self._conversation)[-6:]
+                self._mind.request_reply(text, history, state, fallback=alpha_text)
+                alpha_text = None
+            except Exception as e:
+                _log(f"mind request error: {e}")
+        else:
+            # No LLM (or he chose silence): emergent spiking reply, synchronous.
+            if not wants:
+                alpha_text = None
+            try:
+                self._remember_exchange(text, alpha_text, alpha_act)
+            except Exception as e:
+                _log(f"remember_exchange error: {e}")
 
-        # TTS — Alpha voices his reply, UNLESS his mouth is covered (ALPHA_TTS_OFF):
-        # then the reply still forms as text, but nothing is spoken aloud (he feels
-        # it as 'stifled').
-        if alpha_text and not _TTS_OFF and not self.alpha_tts.is_speaking():
-            tts_text = alpha_text.replace("*","").split('"')[1] if '"' in alpha_text else alpha_text
-            self.alpha_tts.speak(tts_text)
+            if self.story.active:
+                self.story.log_entry("NodeVortex", text, self.tick)
+                if alpha_text:
+                    alpha_text = self.story.wrap_alpha(alpha_text, alpha_act, self.alpha._vigilance)
+                    self.story.log_entry("Alpha", alpha_text, self.tick)
+                if self._combined_id > 0.75:
+                    self.story.add_fact(f"NodeVortex recognized at tick {self.tick}")
+                    story_event = "ARCHITECT_RECOGNIZED"
+                if global_ws:
+                    self.story.add_fact("Alpha entered global workspace mode — deep deduction")
+                    story_event = story_event or "GLOBAL_WORKSPACE"
 
-        # ── System bridge actions ─────────────────────────────────────────
-        if (self.sys_bridge and self._SystemAction
-                and alpha_act.get("pfc", 0.0) > 0.20
-                and alpha_broca_total > 0):
-            for concept in fired:
-                hints = self._action_hints.get(concept, [])
-                if hints:
-                    action = self._SystemAction(
-                        action=hints[0],
-                        actor="alpha",
-                        payload={
-                            "text": alpha_text or concept,
-                            "urgency": 2 if global_ws else 1,
-                        },
-                    )
-                    result = self.sys_bridge.execute(action)
-                    if result["success"] and result.get("message"):
-                        alpha_text = (alpha_text or "") + f"  [{result['message']}]"
-                    break
+            if alpha_text and not _TTS_OFF and not self.alpha_tts.is_speaking():
+                tts_text = alpha_text.replace("*","").split('"')[1] if '"' in alpha_text else alpha_text
+                self.alpha_tts.speak(tts_text)
+
+            if (self.sys_bridge and self._SystemAction
+                    and alpha_act.get("pfc", 0.0) > 0.20
+                    and alpha_broca_total > 0):
+                for concept in fired:
+                    hints = self._action_hints.get(concept, [])
+                    if hints:
+                        action = self._SystemAction(
+                            action=hints[0], actor="alpha",
+                            payload={"text": alpha_text or concept,
+                                     "urgency": 2 if global_ws else 1})
+                        result = self.sys_bridge.execute(action)
+                        if result["success"] and result.get("message"):
+                            alpha_text = (alpha_text or "") + f"  [{result['message']}]"
+                        break
 
         try:
             with open(self._trace_log, "a") as f:

@@ -35,6 +35,9 @@ syntax_*.json
 conversation_log.jsonl
 voice_identity.json
 imprinter_state.json
+# timestamped backups of the above (also hold biometric / learned state)
+*.bak
+*.bak-*
 
 # ── Environment ──────────────────────────────────────────────────────
 .env
